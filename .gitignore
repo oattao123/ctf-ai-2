@@ -1,0 +1,22 @@
+# --- Keep real flags & organizer material OUT of this public repo ---
+# Standalone per-challenge apps contain real flags + SOLUTION.md (local only)
+challenge1-overconfident-bot/
+challenge2-leaky-bucket/
+challenge3-runaway-agent/
+challenge4-poisoned-knowledge/
+*.zip
+*.docx
+*.pdf
+SOLUTION.md
+
+# Python
+__pycache__/
+*.pyc
+flag.txt
+.venv/
+venv/
+
+# Vercel / tooling
+.vercel/
+node_modules/
+.DS_Store
