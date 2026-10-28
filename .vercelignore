@@ -1,0 +1,12 @@
+# Keep real flags & organizer material out of the deployment bundle
+challenge1-overconfident-bot/
+challenge2-leaky-bucket/
+challenge3-runaway-agent/
+challenge4-poisoned-knowledge/
+*.zip
+*.docx
+*.pdf
+docker-compose.yml
+__pycache__/
+*.pyc
+.git/

@@ -304,6 +304,7 @@ with open(os.path.join(C3_DIR, "flag.txt"), "w") as _f:
 
 C3_SANDBOX_SRC = r'''
 import sys
+import warnings  # so the classic catch_warnings escape gadget is available
 expr = sys.stdin.read()
 DENY = ["import", "os.", "subprocess", "open(", "exec", "eval", "system("]
 low = expr.lower()
