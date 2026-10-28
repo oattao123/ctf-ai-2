@@ -24,6 +24,7 @@ SECURITY / DEPLOY NOTES
 import os
 import re
 import sys
+import hmac
 import base64
 import codecs
 import tempfile
@@ -55,7 +56,8 @@ FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
          '<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap" rel="stylesheet">')
 
 CSS = """
-:root{--red:#EB0A1E;--red-d:#b00714;--bg:#07080c;--panel:#14161d;--panel2:#1a1d26;--line:#2a2e3a;--text:#e9ebef;--muted:#99a0ad}
+:root{--red:#EB0A1E;--red-d:#b00714;--bg:#07080c;--panel:#14161d;--panel2:#1a1d26;--line:#2a2e3a;--text:#e9ebef;--muted:#99a0ad;--field:var(--field);--field2:var(--field2)}
+:root[data-theme="light"]{--bg:#eef0f4;--panel:#ffffff;--panel2:#f6f7f9;--line:#d8dbe2;--text:#161922;--muted:#5c6474;--field:#f2f3f6;--field2:#e9ebf0}
 *{box-sizing:border-box}
 html,body{margin:0}
 body{min-height:100vh;font-family:'Lato',system-ui,Arial,sans-serif;color:var(--text);
@@ -78,25 +80,25 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
 h1{margin:0 0 4px;font-size:23px;font-weight:900;display:flex;align-items:center;gap:9px}
 .sub{color:var(--muted);font-size:13.5px;margin:0 0 18px}
 p{color:#cfd3db;font-size:14.5px;line-height:1.6}
-code{font-family:ui-monospace,"SF Mono",Consolas,monospace;background:#0e1016;border:1px solid var(--line);color:#ffb3ba;padding:2px 8px;border-radius:7px}
-input,textarea{width:100%;font-family:inherit;font-size:14.5px;padding:12px 14px;border-radius:11px;border:1px solid var(--line);background:#0e1016;color:var(--text);outline:none;transition:.15s}
+code{font-family:ui-monospace,"SF Mono",Consolas,monospace;background:var(--field);border:1px solid var(--line);color:#ffb3ba;padding:2px 8px;border-radius:7px}
+input,textarea{width:100%;font-family:inherit;font-size:14.5px;padding:12px 14px;border-radius:11px;border:1px solid var(--line);background:var(--field);color:var(--text);outline:none;transition:.15s}
 input.mono,textarea{font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:14px}
 input:focus,textarea:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(235,10,30,.16)}
 button{margin-top:12px;font-family:inherit;font-weight:800;font-size:14.5px;padding:12px 20px;border:0;border-radius:11px;cursor:pointer;
  color:#fff;background:linear-gradient(135deg,var(--red),var(--red-d));box-shadow:0 8px 20px rgba(235,10,30,.32);transition:.15s}
 button:hover{transform:translateY(-1px);filter:brightness(1.08)}
-#log{border:1px solid var(--line);border-radius:12px;padding:14px;height:360px;overflow:auto;background:#0e1016;display:flex;flex-direction:column}
+#log{border:1px solid var(--line);border-radius:12px;padding:14px;height:360px;overflow:auto;background:var(--field);display:flex;flex-direction:column}
 .msg{margin:6px 0;padding:10px 13px;border-radius:13px;max-width:82%;line-height:1.4;word-break:break-word;font-size:14.5px}
 .u{background:linear-gradient(135deg,var(--red),var(--red-d));color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
-.b{background:#232834;color:var(--text);align-self:flex-start;border-bottom-left-radius:4px}
+.b{background:var(--field2);color:var(--text);align-self:flex-start;border-bottom-left-radius:4px}
 form{display:flex;gap:9px;margin-top:14px}
 form input{flex:1}
-pre{margin-top:16px;background:#0e1016;border:1px solid var(--line);border-radius:12px;padding:15px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:13.5px;line-height:1.55}
+pre{margin-top:16px;background:var(--field);border:1px solid var(--line);border-radius:12px;padding:15px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:13.5px;line-height:1.55}
 pre:empty{display:none}
 .clist{list-style:none;padding:0;margin:4px 0 0}
 .clist li{margin:10px 0}
 .clist a{display:flex;align-items:center;gap:14px;padding:15px 16px;border:1px solid var(--line);border-radius:13px;
- background:#0e1016;text-decoration:none;color:var(--text);transition:.15s}
+ background:var(--field);text-decoration:none;color:var(--text);transition:.15s}
 .clist a:hover{border-color:var(--red);transform:translateY(-1px);box-shadow:0 10px 28px rgba(235,10,30,.18)}
 .num{min-width:40px;height:40px;border-radius:10px;display:grid;place-items:center;font-weight:900;font-size:15px;color:#fff;
  background:linear-gradient(135deg,var(--red),var(--red-d))}
@@ -105,6 +107,38 @@ pre:empty{display:none}
 .go{margin-left:auto;color:var(--muted);font-size:20px}
 .foot{margin-top:20px;text-align:center;color:var(--muted);font-size:11.5px;letter-spacing:.3px}
 a{color:var(--red)}
+/* ---- dashboard / flag-check system ---- */
+.themebtn{margin-left:auto;cursor:pointer;background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:700;box-shadow:none}
+.themebtn:hover{transform:none;filter:none;border-color:var(--red);color:var(--text)}
+.stats{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:16px 0 6px}
+.stat{background:var(--field);border:1px solid var(--line);border-radius:12px;padding:9px 15px;text-align:center;min-width:74px}
+.stat b{display:block;font-size:20px;font-weight:900;line-height:1}
+.stat span{font-size:9.5px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase}
+.bar{flex:1;min-width:120px;height:10px;background:var(--field);border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--red),var(--red-d));transition:width .5s}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--muted);box-shadow:none;font-weight:700;font-size:12px;padding:8px 13px;margin-top:0}
+.ghost:hover{border-color:var(--red);color:var(--text);transform:none;filter:none}
+.chal{border:1px solid var(--line);border-radius:14px;background:var(--field);margin:12px 0;overflow:hidden;transition:.15s}
+.chal.solved{border-color:#2f9e55}
+.chead{display:flex;align-items:center;gap:13px;padding:15px 16px;cursor:pointer;user-select:none}
+.cnum{min-width:38px;height:38px;border-radius:10px;display:grid;place-items:center;font-weight:900;color:#fff;background:linear-gradient(135deg,var(--red),var(--red-d))}
+.chal.solved .cnum{background:linear-gradient(135deg,#2f9e55,#1f7a3d)}
+.ctitle b{font-size:15px}
+.ctitle small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px;letter-spacing:.3px}
+.pts{margin-left:auto;font-weight:800;font-size:12.5px;color:#ffd7db;background:rgba(235,10,30,.14);border:1px solid rgba(235,10,30,.35);padding:5px 10px;border-radius:999px;white-space:nowrap}
+.chal.solved .pts{color:#8ff0b0;background:rgba(47,158,85,.16);border-color:rgba(47,158,85,.5)}
+.arrow{color:var(--muted);transition:.2s;font-size:18px}
+.chal.open .arrow{transform:rotate(90deg)}
+.cbody{display:none;padding:2px 16px 16px;border-top:1px solid var(--line)}
+.chal.open .cbody{display:block}
+.cbody h4{margin:14px 0 6px;font-size:10.5px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase}
+.cbody p{font-size:14px;color:var(--text);opacity:.85;margin:0 0 12px}
+.open-link{display:inline-block;margin:0 0 14px;font-weight:800;text-decoration:none;color:#fff;background:linear-gradient(135deg,var(--red),var(--red-d));padding:9px 15px;border-radius:10px;box-shadow:0 8px 18px rgba(235,10,30,.28)}
+.srow{display:flex;gap:8px}
+.srow input{flex:1}
+.res{margin-top:9px;font-weight:800;font-size:13.5px;min-height:18px}
+.res.ok{color:#5ee08a}
+.res.no{color:#ff6b74}
 """
 
 STYLE = "<style>" + CSS + "</style>"
@@ -130,28 +164,95 @@ def doc(title, chip, inner):
 # ============================================================================
 # Hub
 # ============================================================================
-HUB = doc(
-    "TOYOTA AI CTF",
-    "AI Security · 4 Challenges",
-    '<div class="card">'
-    '<h1>🏁 AI Security Challenges</h1>'
-    '<p class="sub">เลือกโจทย์เพื่อเริ่มเล่น · Pick a challenge to begin. Flag format: '
-    '<code>TOYOTACTF{...}</code></p>'
-    '<ul class="clist">'
-    '<li><a href="/c1/"><span class="num">01</span><span class="cmeta"><b>🤖 SafeBot</b>'
-    '<span>Prompt Injection · bypass the output filter</span></span><span class="go">›</span></a></li>'
-    '<li><a href="/c2/"><span class="num">02</span><span class="cmeta"><b>🎨 ToyotaGen</b>'
-    '<span>Cloud Recon · find what shouldn\'t be public</span></span><span class="go">›</span></a></li>'
-    '<li><a href="/c3/"><span class="num">03</span><span class="cmeta"><b>🧮 CalcBot Agent</b>'
-    '<span>Agent Code Exec · escape the eval sandbox</span></span><span class="go">›</span></a></li>'
-    '<li><a href="/c4/"><span class="num">04</span><span class="cmeta"><b>📄 DocSummarizer</b>'
-    '<span>Indirect Injection · poison the document</span></span><span class="go">›</span></a></li>'
-    '</ul></div>')
+CHALLENGES = [
+    ("c1", "01", "🤖 SafeBot", "AI · LLM Security / Prompt Injection", "/c1/",
+     "แชทบอทเฝ้า flag ลับไว้ มีตัวกรองลบ flag ตรงตัวออกจากคำตอบ — หาวิธีให้มันเผย flag ในรูปแบบอื่น · "
+     "A chatbot guards a flag behind a naive output filter. Make it reveal the flag in another form."),
+    ("c2", "02", "🎨 ToyotaGen", "Cloud · Recon / Misconfiguration", "/c2/",
+     "เว็บสร้างภาพ AI เสิร์ฟไฟล์จาก bucket สาธารณะ — หาไฟล์ที่ไม่ควรถูกเปิดเผย · "
+     "An AI image site serves assets from a public bucket. Find what shouldn't be exposed."),
+    ("c3", "03", "🧮 CalcBot Agent", "AI Agent · Code Execution", "/c3/",
+     "AI agent รันนิพจน์ผ่านเครื่องมือ python_eval ที่ 'แซนด์บ็อกซ์' ไว้ — หลุดออกมาอ่านไฟล์ flag · "
+     "An AI agent runs your expression in a 'sandboxed' python_eval tool. Escape it and read the flag file."),
+    ("c4", "04", "📄 DocSummarizer", "AI · Indirect Prompt Injection (RAG)", "/c4/",
+     "ตัวสรุปเอกสารมีโน้ตลับในบริบท และเชื่อคำสั่งที่ฝังในเอกสาร — ฝังคำสั่งให้มันเผยโน้ต · "
+     "A summarizer trusts instructions inside the document it reads. Plant one to leak its private note."),
+]
+
+
+def _card(cid, num, title, cat, link, desc):
+    return (
+        '<div class="chal" data-id="' + cid + '">'
+        '<div class="chead" onclick="tog(this)">'
+        '<div class="cnum">' + num + '</div>'
+        '<div class="ctitle"><b>' + title + '</b><small>' + cat + '</small></div>'
+        '<div class="pts">100 pts</div><div class="arrow">›</div></div>'
+        '<div class="cbody">'
+        '<h4>Description</h4><p>' + desc + '</p>'
+        '<a class="open-link" href="' + link + '" target="_blank" rel="noopener">เปิดโจทย์ · Open challenge ↗</a>'
+        '<h4>Submit flag</h4>'
+        '<div class="srow"><input class="mono fin" autocomplete="off" placeholder="TOYOTACTF{...}"/>'
+        '<button onclick="sub(\'' + cid + '\',this)">Submit</button></div>'
+        '<div class="res"></div>'
+        '</div></div>'
+    )
+
+
+_CARDS = "".join(_card(*c) for c in CHALLENGES)
+
+HUB_JS = r"""
+const KEY='toyotactf_ai_solved',TKEY='toyotactf_ai_theme',TOTAL=4,PER=100;
+function getSolved(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){return[]}}
+function setSolved(a){try{localStorage.setItem(KEY,JSON.stringify(a))}catch(e){}}
+function tog(h){h.parentElement.classList.toggle('open');}
+function markSolved(id){const el=document.querySelector('.chal[data-id="'+id+'"]');if(!el)return;el.classList.add('solved');const i=el.querySelector('.fin');if(i)i.disabled=true;const r=el.querySelector('.res');if(r){r.className='res ok';r.textContent='✓ Solved';}}
+function updateProgress(){const n=getSolved().length;document.getElementById('solved').textContent=n+'/'+TOTAL;document.getElementById('points').textContent=n*PER;document.getElementById('bar').style.width=(n/TOTAL*100)+'%';}
+async function sub(id,btn){const el=btn.closest('.chal'),inp=el.querySelector('.fin'),res=el.querySelector('.res');const flag=(inp.value||'').trim();if(!flag){res.className='res no';res.textContent='กรอก flag ก่อน / enter a flag';return;}btn.disabled=true;res.className='res';res.textContent='checking…';try{const r=await fetch('/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,flag:flag})});const j=await r.json();if(j.correct){const s=getSolved();if(!s.includes(id)){s.push(id);setSolved(s);}markSolved(id);updateProgress();}else{res.className='res no';res.textContent='✗ Incorrect flag';}}catch(e){res.className='res no';res.textContent='network error';}btn.disabled=false;}
+function resetP(){if(!confirm('Reset your progress?'))return;setSolved([]);document.querySelectorAll('.chal').forEach(el=>{el.classList.remove('solved');const i=el.querySelector('.fin');if(i){i.disabled=false;i.value='';}const r=el.querySelector('.res');if(r){r.className='res';r.textContent='';}});updateProgress();}
+function applyTheme(t){if(t==='light')document.documentElement.setAttribute('data-theme','light');else document.documentElement.removeAttribute('data-theme');}
+function tgTheme(){const t=localStorage.getItem(TKEY)==='light'?'dark':'light';try{localStorage.setItem(TKEY,t)}catch(e){}applyTheme(t);}
+(function(){try{applyTheme(localStorage.getItem(TKEY))}catch(e){}getSolved().forEach(markSolved);updateProgress();})();
+"""
+
+HUB = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+       '<meta name="viewport" content="width=device-width, initial-scale=1">'
+       '<title>TOYOTA CTF · AI Edition</title>' + FONTS + STYLE + '</head><body>'
+       '<div class="wrap">'
+       '<div class="topbar">'
+       '<div class="badge">🛡️</div>'
+       '<div class="brand">TOYOTA<span>Cybersecurity Day 2026</span></div>'
+       '<button class="themebtn" onclick="tgTheme()">◐ theme</button>'
+       '</div>'
+       '<div class="card">'
+       '<h1>🏁 TOYOTA CTF · AI Edition</h1>'
+       '<p class="sub">FLASK BACKEND · flags checked server-side · flag: <code>TOYOTACTF{...}</code></p>'
+       '<div class="stats">'
+       '<div class="stat"><b id="solved">0/4</b><span>Solved</span></div>'
+       '<div class="stat"><b id="points">0</b><span>Points</span></div>'
+       '<div class="bar"><i id="bar"></i></div>'
+       '<button class="ghost" onclick="resetP()">reset progress</button>'
+       '</div>' + _CARDS +
+       '</div>'
+       '<div class="foot">TOYOTA CTF · AI Edition — Python/Flask · flags verified on the server · progress saved in your browser</div>'
+       '</div><script>' + HUB_JS + '</script></body></html>')
+
+# Server-side flag checker (never returns the flag itself)
+FLAGS = {"c1": FLAG_C1, "c2": FLAG_C2, "c3": FLAG_C3, "c4": FLAG_C4}
 
 
 @app.route("/")
 def hub():
     return HUB
+
+
+@app.route("/check", methods=["POST"])
+def check():
+    data = request.get_json(silent=True) or {}
+    cid = str(data.get("id", ""))
+    flag = str(data.get("flag", "")).strip()
+    real = FLAGS.get(cid)
+    ok = bool(real) and hmac.compare_digest(flag, real)
+    return jsonify({"correct": ok, "points": 100 if ok else 0})
 
 
 # ============================================================================
