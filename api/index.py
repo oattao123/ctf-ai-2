@@ -167,6 +167,7 @@ a{color:var(--red)}
 /* toolbar: search + difficulty filter */
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 2px}
 .toolbar input{flex:1;min-width:140px;padding:9px 12px}
+.flabel{font-size:10.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);align-self:center;margin-right:2px}
 .fbtn{cursor:pointer;background:var(--field);border:1px solid var(--line);color:var(--muted);border-radius:999px;padding:7px 13px;font-weight:700;font-size:12px;box-shadow:none;margin:0}
 .fbtn:hover{transform:none;filter:none;border-color:var(--red);color:var(--text)}
 .fbtn.active{background:linear-gradient(135deg,var(--red),var(--red-d));color:#fff;border-color:transparent}
@@ -239,6 +240,10 @@ CHALLENGES = [
 _DIFF = {"easy": "#2f9e55", "medium": "#d98a2b", "hard": "#EB0A1E"}
 # Challenge downloadable attachments: cid -> (filename, label)
 FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("ciphertext.txt", "ciphertext.txt")}
+# Short category per challenge (for the category filter)
+CATEGORY = {"c1": "AI", "c2": "Cloud", "c3": "Pwn", "c4": "AI",
+            "c5": "Web/API", "c6": "Crypto", "c7": "Pwn", "c8": "Crypto"}
+CATEGORIES = ["AI", "Cloud", "Web/API", "Crypto", "Pwn"]
 
 
 def _card(cid, num, title, cat, link, pts, diff, desc):
@@ -246,8 +251,10 @@ def _card(cid, num, title, cat, link, pts, diff, desc):
     if cid in FILES_FOR:
         fn, lbl = FILES_FOR[cid]
         dl = ('<a class="dl" href="/files/' + cid + '/' + fn + '" download>⬇ ' + lbl + '</a>')
+    ckey = CATEGORY.get(cid, "Misc")
     return (
         '<div class="chal" data-id="' + cid + '" data-pts="' + str(pts) + '" data-diff="' + diff + '" '
+        'data-cat="' + ckey + '" '
         'data-title="' + (title + " " + cat + " " + desc).lower().replace('"', "") + '">'
         '<div class="chead" onclick="tog(this)">'
         '<div class="cnum">' + num + '</div>'
@@ -269,6 +276,8 @@ def _card(cid, num, title, cat, link, pts, diff, desc):
 
 _CARDS = "".join(_card(*c) for c in CHALLENGES)
 _TOTAL = len(CHALLENGES)
+_CATCHIPS = "".join('<button class="fbtn" data-kind="cat" data-f="' + c + '" onclick="setF(this)">' + c + '</button>'
+                    for c in CATEGORIES)
 
 HUB_JS = r"""
 const KEY='toyotactf_ai_solved',TKEY='toyotactf_ai_theme',TOTAL=__TOTAL__;
@@ -303,9 +312,9 @@ function tog(h){h.parentElement.classList.toggle('open');}
 function markSolved(id){const el=document.querySelector('.chal[data-id="'+id+'"]');if(!el)return;el.classList.add('solved');const i=el.querySelector('.fin');if(i)i.disabled=true;const r=el.querySelector('.res');if(r){r.className='res ok';r.textContent='✓ Solved';}}
 function updateProgress(){const s=getSolved();let pts=0;s.forEach(id=>{const el=document.querySelector('.chal[data-id="'+id+'"]');if(el)pts+=parseInt(el.dataset.pts||'0',10);});document.getElementById('solved').textContent=s.length+'/'+TOTAL;document.getElementById('points').textContent=pts;document.getElementById('bar').style.width=(s.length/TOTAL*100)+'%';}
 async function sub(id,btn){const el=btn.closest('.chal'),inp=el.querySelector('.fin'),res=el.querySelector('.res');const flag=(inp.value||'').trim();if(!flag){res.className='res no';res.textContent='กรอก flag ก่อน / enter a flag';return;}btn.disabled=true;res.className='res';res.textContent='🛡️ verifying (proof-of-work)…';try{const pc=await (await fetch('/pow')).json();const nonce=await solvePow(pc.prefix,pc.bits,id,flag);res.textContent='checking…';const r=await fetch('/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,flag:flag,pow:{prefix:pc.prefix,nonce:nonce}})});const j=await r.json();if(j.correct){const a=getSolved();if(!a.includes(id)){a.push(id);setSolved(a);}markSolved(id);updateProgress();toast('✓ Solved! +'+(el.dataset.pts||0)+' pts');confetti();}else{res.className='res no';res.textContent=j.message||'✗ Incorrect flag';}}catch(e){res.className='res no';res.textContent='network error';}btn.disabled=false;}
-let FILT='all';
-function flt(){const q=(document.getElementById('q').value||'').toLowerCase().trim();document.querySelectorAll('.chal').forEach(el=>{const okF=FILT==='all'||el.dataset.diff===FILT;const okQ=!q||(el.dataset.title||'').includes(q);el.classList.toggle('hide',!(okF&&okQ));});}
-function setF(b){FILT=b.dataset.f;document.querySelectorAll('.fbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');flt();}
+let FDIFF='all',FCAT='all';
+function flt(){const q=(document.getElementById('q').value||'').toLowerCase().trim();document.querySelectorAll('.chal').forEach(el=>{const okD=FDIFF==='all'||el.dataset.diff===FDIFF;const okC=FCAT==='all'||el.dataset.cat===FCAT;const okQ=!q||(el.dataset.title||'').includes(q);el.classList.toggle('hide',!(okD&&okC&&okQ));});}
+function setF(b){if(b.dataset.kind==='cat')FCAT=b.dataset.f;else FDIFF=b.dataset.f;b.parentElement.querySelectorAll('.fbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');flt();}
 let _tt;function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>t.classList.remove('show'),2600);}
 function confetti(){const cv=document.getElementById('confetti'),cx=cv.getContext('2d');cv.width=innerWidth;cv.height=innerHeight;const cols=['#EB0A1E','#ff6b74','#ffd7db','#5ee08a','#ffffff'];const P=[];for(let i=0;i<140;i++)P.push({x:innerWidth/2,y:innerHeight*0.3,vx:(Math.random()-0.5)*14,vy:Math.random()*-12-4,g:0.3+Math.random()*0.2,s:5+Math.random()*6,c:cols[i%cols.length],r:Math.random()*6,vr:(Math.random()-0.5)*0.4});let f=0;(function anim(){cx.clearRect(0,0,cv.width,cv.height);f++;P.forEach(p=>{p.vy+=p.g;p.x+=p.vx;p.y+=p.vy;p.r+=p.vr;cx.save();cx.translate(p.x,p.y);cx.rotate(p.r);cx.fillStyle=p.c;cx.fillRect(-p.s/2,-p.s/2,p.s,p.s*0.6);cx.restore();});if(f<120)requestAnimationFrame(anim);else cx.clearRect(0,0,cv.width,cv.height);})();}
 function startCountdown(){const end=window.CTF_EVENT_END;if(!end)return;const cd=document.getElementById('cd');cd.hidden=false;function tick(){const left=end-Math.floor(Date.now()/1000);if(left<=0){cd.classList.add('ended');cd.textContent='🏁 Event ended — submissions closed';return;}const d=Math.floor(left/86400),h=Math.floor(left%86400/3600),m=Math.floor(left%3600/60),s=left%60;cd.textContent='⏳ Event ends in '+(d?d+'d ':'')+h+'h '+m+'m '+s+'s';setTimeout(tick,1000);}tick();}
@@ -345,14 +354,20 @@ HUB = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
        '<div class="countdown" id="cd" hidden></div>'
        '<div class="toolbar">'
        '<input id="q" autocomplete="off" placeholder="🔍 ค้นหาโจทย์ / search..." oninput="flt()"/>'
-       '<button class="fbtn active" data-f="all" onclick="setF(this)">all</button>'
-       '<button class="fbtn" data-f="easy" onclick="setF(this)">easy</button>'
-       '<button class="fbtn" data-f="medium" onclick="setF(this)">medium</button>'
-       '<button class="fbtn" data-f="hard" onclick="setF(this)">hard</button>'
+       '</div>'
+       '<div class="toolbar"><span class="flabel">level</span>'
+       '<button class="fbtn active" data-kind="diff" data-f="all" onclick="setF(this)">all</button>'
+       '<button class="fbtn" data-kind="diff" data-f="easy" onclick="setF(this)">easy</button>'
+       '<button class="fbtn" data-kind="diff" data-f="medium" onclick="setF(this)">medium</button>'
+       '<button class="fbtn" data-kind="diff" data-f="hard" onclick="setF(this)">hard</button>'
+       '</div>'
+       '<div class="toolbar"><span class="flabel">category</span>'
+       '<button class="fbtn active" data-kind="cat" data-f="all" onclick="setF(this)">all</button>'
+       + _CATCHIPS +
        '</div>' + _CARDS +
        '</div>'
        '<div class="foot">TOYOTA CTF · AI Edition — Python/Flask · flags verified on the server · '
-       '<a href="/writeups">writeups</a></div>'
+       '<a href="/info">rules &amp; scoring</a> · <a href="/writeups">writeups</a></div>'
        '</div>'
        '<div id="toast"></div><canvas id="confetti"></canvas>'
        '<script src="/config.js"></script><script>' + HUB_JS + '</script></body></html>')
@@ -507,6 +522,36 @@ def writeups():
                '<div class="card"><h1>📝 Writeups</h1>'
                '<p class="sub">แนวทางแก้โดยสังเขปของแต่ละข้อ · Brief solution approach for each challenge.</p>'
                + rows + '<p style="margin-top:14px"><a href="/">← back to challenges</a></p></div>')
+
+
+@app.route("/info")
+def info():
+    cats = " · ".join(CATEGORIES)
+    return doc(
+        "Rules & Scoring · TOYOTA CTF", "Info · Rules · Scoring",
+        '<div class="card">'
+        '<h1>ℹ️ Rules &amp; Info</h1>'
+        '<p class="sub">กติกา การให้คะแนน และคำถามพบบ่อย · The rules, scoring, and FAQ for this event.</p>'
+        '<h4>Flag format</h4>'
+        '<p>ทุก flag อยู่ในรูป <code>TOYOTACTF{...}</code> ส่งที่ปุ่ม <b>Submit flag</b> ของแต่ละข้อบนหน้า dashboard '
+        '(เบราว์เซอร์จะทำ proof-of-work ให้อัตโนมัติ)</p>'
+        '<h4>Scoring</h4>'
+        '<p>Easy / Medium = <b>100</b> pts · Hard = <b>200</b> pts · เต็ม <b>1200</b> pts. '
+        'Dynamic scoring (คะแนนลดตามจำนวนทีมที่แก้ได้) และ first-blood จะมาพร้อม scoreboard</p>'
+        '<h4>Categories</h4>'
+        '<p>' + cats + ' — ใช้แถบ <b>category</b> บนหน้า dashboard กรองตามหมวดได้</p>'
+        '<h4>Rules</h4>'
+        '<ul>'
+        '<li>โจมตีเฉพาะเป้าหมายของโจทย์เท่านั้น — ห้ามโจมตีโครงสร้างพื้นฐาน, ทีมอื่น หรือทำ DoS</li>'
+        '<li>ห้ามแชร์ flag / เฉลยระหว่างทีม หรือใช้บอทยิง submission (ระบบมี PoW + honeypot + rate-limit)</li>'
+        '<li>เขียนสคริปต์เพื่อแก้โจทย์ทำได้ (บางข้อออกแบบมาให้ scripting) แต่การ submit ต้องผ่านหน้าเว็บ</li>'
+        '</ul>'
+        '<h4>FAQ</h4>'
+        '<p><b>ส่ง flag ที่ไหน?</b> กด Submit ใต้แต่ละข้อบน dashboard · '
+        '<b>มีคำใบ้ไหม?</b> ระบบ hint แบบปลดล็อกกำลังจะมา · '
+        '<b>เฉลย?</b> หน้า <a href="/writeups">writeups</a> จะเปิดหลังจบงาน</p>'
+        '<p style="margin-top:16px"><a href="/">← back to challenges</a></p>'
+        '</div>')
 
 
 # ============================================================================
