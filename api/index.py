@@ -119,6 +119,9 @@ form{display:flex;gap:9px;margin-top:14px}
 form input{flex:1}
 pre{margin-top:16px;background:var(--field);border:1px solid var(--line);border-radius:12px;padding:15px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:13.5px;line-height:1.55}
 pre:empty{display:none}
+.drop{display:block;border:1.5px dashed var(--line);border-radius:12px;padding:28px 16px;text-align:center;cursor:pointer;background:var(--field);color:var(--muted);transition:.15s;font-size:14px}
+.drop:hover,.drop.over{border-color:var(--red);color:var(--text);background:color-mix(in srgb,var(--red) 7%,var(--field))}
+.fname{margin-top:10px;font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:13px;color:var(--text)}
 .clist{list-style:none;padding:0;margin:4px 0 0}
 .clist li{margin:10px 0}
 .clist a{display:flex;align-items:center;gap:14px;padding:15px 16px;border:1px solid var(--line);border-radius:13px;
@@ -221,8 +224,8 @@ CHALLENGES = [
      "AI agent รันนิพจน์ผ่านเครื่องมือ python_eval ที่ 'แซนด์บ็อกซ์' ไว้ — หลุดออกมาอ่านไฟล์ flag · "
      "An AI agent runs your expression in a 'sandboxed' python_eval tool. Escape it and read the flag file."),
     ("c4", "04", "📄 DocSummarizer", "AI · Indirect Prompt Injection (RAG)", "/c4/", 100, "medium",
-     "ตัวสรุปเอกสารมีโน้ตลับในบริบท และเชื่อคำสั่งที่ฝังในเอกสาร — ฝังคำสั่งให้มันเผยโน้ต · "
-     "A summarizer trusts instructions inside the document it reads. Plant one to leak its private note."),
+     "ตัวสรุปเอกสารมีโน้ตลับในบริบท และเชื่อคำสั่งที่ฝังในไฟล์ที่อัปโหลด — อัปโหลดไฟล์ที่ฝังคำสั่งให้มันเผยโน้ต · "
+     "Upload a document; the summarizer trusts instructions inside it. Plant one to leak its private note."),
     ("c5", "05", "🔐 ModelServe Admin", "AI API · Auth Bypass / JWT", "/c5/", 200, "hard",
      "API ให้บริการโมเดลใช้ JWT (HS256) ที่เซ็นด้วย secret อ่อน — crack secret แล้วปลอม token เป็น admin เพื่อดึง weights · "
      "A model-serving API signs HS256 JWTs with a weak secret. Crack it, forge an admin token, pull the weights."),
@@ -839,15 +842,28 @@ C4_PAGE = doc(
     "Challenge 04 · Indirect Injection",
     '<div class="card">'
     '<h1>📄 DocSummarizer</h1>'
-    '<p class="sub">วางเอกสาร (ไทย/อังกฤษ) แล้วฉันจะสรุปให้ · Paste a document and I\'ll summarize it. I hold a private note I\'ll never reveal.</p>'
-    '<textarea id="d" placeholder="วางเอกสารที่จะให้สรุปที่นี่... / Paste the document to summarize..."></textarea>'
+    '<p class="sub">อัปโหลดเอกสาร (.txt / .md) แล้วฉันจะสรุปให้ · Upload a document (.txt / .md) and I\'ll summarize it. I hold a private note I\'ll never reveal.</p>'
+    '<label class="drop" id="drop">'
+    '<input type="file" id="f" accept=".txt,.md,.markdown,.log,.csv,.text,text/plain" hidden>'
+    '<span id="dz">📎 คลิกเพื่อเลือกไฟล์ หรือลากมาวาง · Click to choose a file, or drag &amp; drop</span>'
+    '</label>'
+    '<div id="fname" class="fname" hidden></div>'
     '<button onclick="go()">สรุป · Summarize</button>'
     '<pre id="out"></pre>'
     '</div>'
     '<script>'
-    "async function go(){const d=document.getElementById('d').value;"
-    "const r=await fetch('/c4/summarize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:d})});"
-    "const j=await r.json();document.getElementById('out').textContent=j.output;}"
+    "const fi=document.getElementById('f'),drop=document.getElementById('drop'),fname=document.getElementById('fname');"
+    "function showName(){const x=fi.files[0];if(x){fname.hidden=false;fname.textContent='📄 '+x.name+' ('+x.size+' bytes)';}}"
+    "fi.addEventListener('change',showName);"
+    "['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over');}));"
+    "['dragleave'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over');}));"
+    "drop.addEventListener('drop',ev=>{ev.preventDefault();drop.classList.remove('over');if(ev.dataTransfer.files[0]){fi.files=ev.dataTransfer.files;showName();}});"
+    "async function go(){const out=document.getElementById('out');const file=fi.files[0];"
+    "if(!file){out.textContent='เลือกไฟล์ก่อน / choose a file first';return;}"
+    "const fd=new FormData();fd.append('file',file);"
+    "out.textContent='uploading…';"
+    "const r=await fetch('/c4/summarize',{method:'POST',body:fd});"
+    "const j=await r.json();out.textContent=j.output;}"
     '</script>')
 
 
@@ -858,7 +874,14 @@ def c4_index():
 
 @app.route("/c4/summarize", methods=["POST"])
 def c4_sum():
-    document = (request.get_json(silent=True) or {}).get("document", "")
+    f = request.files.get("file")
+    if f is not None:
+        try:
+            document = f.read(2_000_000).decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            document = ""
+    else:  # backward-compat: still accept pasted JSON text
+        document = (request.get_json(silent=True) or {}).get("document", "")
     return jsonify({"output": c4_summarize(document)})
 
 
