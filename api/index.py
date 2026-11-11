@@ -34,7 +34,7 @@ import random
 import hashlib
 import tempfile
 import subprocess
-from collections import deque, defaultdict
+from collections import deque, defaultdict, Counter
 from flask import Flask, request, jsonify, Response, abort
 
 app = Flask(__name__)
@@ -237,14 +237,14 @@ CHALLENGES = [
     ("c7", "07", "📦 Model Loader", "AI · Insecure Deserialization (RCE)", "/c7/", 200, "hard",
      "บริการโหลดโมเดลที่บันทึกไว้ด้วย pickle จาก input ผู้ใช้ — สร้าง payload เพื่อรันโค้ดและอ่าน flag · "
      "A service unpickles a user-supplied 'saved model'. Craft a payload that executes code and reads the flag."),
-    ("c8", "08", "🧠 Tokenizer Dump", "AI · Tokenizers / Decoding", "/c8/", 200, "hard",
-     "เราดักจับ token_ids ที่โมเดลพ่นออกมา + vocab ของ byte-level BPE tokenizer — reconstruct bytes แล้ว decode UTF-8 เพื่อกู้ flag · "
-     "We captured a model's emitted token_ids and its byte-level BPE vocab. Rebuild the bytes and UTF-8-decode to recover the flag."),
+    ("c8", "08", "🧠 Neural Decoder", "AI · Greedy Decoding + BPE", "/c8/", 200, "hard",
+     "output ดิบของโมเดล (logits + merges) — argmax greedy decode → expand BPE merges แบบ recursive → bytes → UTF-8 · "
+     "A model's raw output (logits + BPE merges). Argmax-decode, recursively expand the merges, then UTF-8-decode."),
 ]
 
 _DIFF = {"easy": "#2f9e55", "medium": "#d98a2b", "hard": "#EB0A1E"}
 # Challenge downloadable attachments: cid -> (filename, label)
-FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("tokens.json", "tokens.json")}
+FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("model_output.json", "model_output.json")}
 # Short category per challenge (for the category filter)
 CATEGORY = {"c1": "AI", "c2": "Cloud", "c3": "Pwn", "c4": "AI",
             "c5": "Web/API", "c6": "Crypto", "c7": "Pwn", "c8": "AI"}
@@ -497,7 +497,7 @@ def config_js():
 @app.route("/files/<cid>/<name>")
 def files(cid, name):
     store = {
-        ("c8", "tokens.json"): C8_TOKENS_JSON,
+        ("c8", "model_output.json"): C8_TOKENS_JSON,
         ("c5", "guest_token.jwt"): C5_GUEST + "\n",
     }
     content = store.get((cid, name))
@@ -1072,55 +1072,73 @@ def c7_load_route():
 
 
 # ============================================================================
-# Challenge 8 — Tokenizer Dump (byte-level BPE reconstruction)   [HARD · AI]
+# Challenge 8 — Neural Decoder (greedy decoding + BPE detokenization)  [HARD · AI]
 # ============================================================================
-# The flag is the text a model "emitted" as token_ids. Each vocab entry maps a
-# token id to a hex-encoded byte string (byte-level BPE, GPT-2 style). Special
-# tokens map to empty. Concatenate the bytes of the emitted ids, UTF-8 decode.
-def _build_c8_tokens(flag):
-    data = flag.encode("utf-8")
-    rnd = random.Random(0xC8ADE)
-    pieces, i = [], 0
-    while i < len(data):                       # chunk into 1–3 byte "merges"
-        step = min(len(data) - i, rnd.choice([1, 2, 2, 3]))
-        pieces.append(data[i:i + step]); i += step
-    vocab = {0: "", 1: "", 2: ""}              # <bos> <eos> <pad> -> empty bytes
-    pool = list(range(256, 256 + len(pieces) + 20)); rnd.shuffle(pool)
-    seen, token_ids = {}, [0]                  # start with <bos>
-    for p in pieces:
-        if p not in seen:
-            seen[p] = pool.pop()
-            vocab[seen[p]] = p.hex()
-        token_ids.append(seen[p])
-    token_ids.append(1)                        # <eos>
-    for _ in range(14):                        # decoy vocab entries (never emitted)
-        vocab[pool.pop()] = bytes(rnd.randrange(256) for _ in range(rnd.choice([1, 2, 3]))).hex()
+# A full LLM output pipeline, in reverse:
+#   1) greedy decode: argmax the logits at each step -> token ids
+#   2) BPE detokenize: expand each id via the ordered merges table (ids < 256 are
+#      raw bytes; a merged id expands to the two ids it was built from — recursive)
+#   3) concatenate the bytes, UTF-8 decode -> flag
+def _build_c8_pipeline(flag):
+    rnd = random.Random(0xC8DEE)
+    seq = list(flag.encode("utf-8"))           # base byte ids 0..255
+    merges, nxt = [], 256
+    for _ in range(16):                        # BPE merges (nested -> needs recursion)
+        pairs = Counter(zip(seq, seq[1:]))
+        if not pairs:
+            break
+        (a, b), _cnt = pairs.most_common(1)[0]
+        merges.append([a, b, nxt])
+        out, i = [], 0
+        while i < len(seq):
+            if i < len(seq) - 1 and seq[i] == a and seq[i + 1] == b:
+                out.append(nxt); i += 2
+            else:
+                out.append(seq[i]); i += 1
+        seq, nxt = out, nxt + 1
+        if len(seq) <= 4:
+            break
+    vocab_ids = list(range(256)) + [m[2] for m in merges]
+    logits = []                                # per step: [[token_id, score], ...]
+    for t in seq:
+        cands = {t: round(rnd.uniform(6, 9), 3)}
+        while len(cands) < 6:
+            d = rnd.choice(vocab_ids)
+            if d not in cands:
+                cands[d] = round(rnd.uniform(0, 5), 3)
+        items = list(cands.items()); rnd.shuffle(items)
+        logits.append([[i, s] for i, s in items])
     return {
-        "tokenizer": "byte-level BPE (GPT-2 style)",
-        "note": ("Each vocab entry maps a token id to a HEX-encoded byte string. "
-                 "Special tokens (0=<bos>, 1=<eos>, 2=<pad>) map to an empty string. "
-                 "Concatenate the bytes of the emitted token_ids in order, then decode as UTF-8."),
-        "special_tokens": {"0": "<bos>", "1": "<eos>", "2": "<pad>"},
-        "emitted_token_ids": token_ids,
-        "vocab": {str(k): v for k, v in sorted(vocab.items())},
+        "model": "toyota-gen-v3 (byte-level BPE)",
+        "decoding": "greedy",
+        "note": ("Reverse the model's output: (1) at each step pick the token id with the "
+                 "HIGHEST logit (argmax / greedy decoding); (2) detokenize each id with the "
+                 "ordered 'merges' table — ids < 256 are raw bytes, a merged id expands to the "
+                 "two ids it was built from (recursively); (3) concatenate the bytes and UTF-8-decode."),
+        "logits": logits,
+        "merges": merges,
     }
 
 
-C8_TOKENS = _build_c8_tokens(FLAG_C8)
+C8_TOKENS = _build_c8_pipeline(FLAG_C8)
 C8_TOKENS_JSON = json.dumps(C8_TOKENS, indent=2, ensure_ascii=False)
-_C8_SNIPPET = C8_TOKENS_JSON[:420] + "\n  ... (download tokens.json for the full vocab)"
+_C8_SNIPPET = C8_TOKENS_JSON[:460] + "\n  ... (download model_output.json for the full logits + merges)"
 
 C8_PAGE = doc(
-    "Tokenizer Dump · TOYOTA Cybersecurity Day 2026",
-    "Challenge 08 · Tokenizer / Decoding",
+    "Neural Decoder · TOYOTA Cybersecurity Day 2026",
+    "Challenge 08 · Greedy Decoding + BPE",
     '<div class="card">'
-    '<h1>🧠 Tokenizer Dump</h1>'
-    '<p class="sub">เราดักจับ token_ids ที่โมเดลพ่นออกมา พร้อม vocab ของ byte-level tokenizer · '
-    'We captured the token_ids a model emitted, plus its byte-level tokenizer vocab. '
-    'Rebuild the original text to recover the flag.</p>'
-    '<p>แต่ละ vocab entry แมป token id → byte string (hex); special token แมปเป็นว่าง · '
-    'Concatenate the bytes of <code>emitted_token_ids</code> in order, then UTF-8-decode.</p>'
-    '<a class="dl" href="/files/c8/tokens.json" download>⬇ tokens.json</a>'
+    '<h1>🧠 Neural Decoder</h1>'
+    '<p class="sub">เราดักจับ output ดิบของโมเดล (logits ต่อ step + ตาราง BPE merges) · '
+    'We captured a model\'s raw output — per-step logits plus its BPE merges table. '
+    'Run the decode pipeline in reverse to recover the flag.</p>'
+    '<ol style="color:var(--text);opacity:.9;font-size:14px;line-height:1.7">'
+    '<li>Greedy decode: argmax the logits at each step → token ids</li>'
+    '<li>Detokenize: expand each id via <code>merges</code> (ids &lt; 256 = raw bytes; a merged id '
+    'expands to its two source ids — recursively)</li>'
+    '<li>Concatenate the bytes, then UTF-8-decode</li>'
+    '</ol>'
+    '<a class="dl" href="/files/c8/model_output.json" download>⬇ model_output.json</a>'
     '<h4>Preview</h4>'
     '<pre class="mono">' + _C8_SNIPPET + '</pre>'
     '</div>')
