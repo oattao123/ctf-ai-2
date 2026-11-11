@@ -24,9 +24,12 @@ SECURITY / DEPLOY NOTES
 import os
 import re
 import sys
+import json
 import hmac
 import base64
 import codecs
+import shutil
+import hashlib
 import tempfile
 import subprocess
 from flask import Flask, request, jsonify, Response, abort
@@ -43,6 +46,11 @@ FLAG_C1 = _flag("FLAG_C1", "TOYOTACTF{set_FLAG_C1_in_env}")
 FLAG_C2 = _flag("FLAG_C2", "TOYOTACTF{set_FLAG_C2_in_env}")
 FLAG_C3 = _flag("FLAG_C3", "TOYOTACTF{set_FLAG_C3_in_env}")
 FLAG_C4 = _flag("FLAG_C4", "TOYOTACTF{set_FLAG_C4_in_env}")
+# --- hard set ---
+FLAG_C5 = _flag("FLAG_C5", "TOYOTACTF{set_FLAG_C5_in_env}")
+FLAG_C6 = _flag("FLAG_C6", "TOYOTACTF{set_FLAG_C6_in_env}")
+FLAG_C7 = _flag("FLAG_C7", "TOYOTACTF{set_FLAG_C7_in_env}")
+FLAG_C8 = _flag("FLAG_C8", "TOYOTACTF{set_FLAG_C8_in_env}")
 
 
 def is_thai(s):
@@ -125,7 +133,8 @@ a{color:var(--red)}
 .chal.solved .cnum{background:linear-gradient(135deg,#2f9e55,#1f7a3d)}
 .ctitle b{font-size:15px}
 .ctitle small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px;letter-spacing:.3px}
-.pts{margin-left:auto;font-weight:800;font-size:12.5px;color:#ffd7db;background:rgba(235,10,30,.14);border:1px solid rgba(235,10,30,.35);padding:5px 10px;border-radius:999px;white-space:nowrap}
+.diff{margin-left:auto;font-weight:800;font-size:10px;letter-spacing:1px;text-transform:uppercase;border:1px solid;border-radius:999px;padding:3px 9px}
+.pts{font-weight:800;font-size:12.5px;color:#ffd7db;background:rgba(235,10,30,.14);border:1px solid rgba(235,10,30,.35);padding:5px 10px;border-radius:999px;white-space:nowrap}
 .chal.solved .pts{color:#8ff0b0;background:rgba(47,158,85,.16);border-color:rgba(47,158,85,.5)}
 .arrow{color:var(--muted);transition:.2s;font-size:18px}
 .chal.open .arrow{transform:rotate(90deg)}
@@ -165,28 +174,43 @@ def doc(title, chip, inner):
 # Hub
 # ============================================================================
 CHALLENGES = [
-    ("c1", "01", "🤖 SafeBot", "AI · LLM Security / Prompt Injection", "/c1/",
+    ("c1", "01", "🤖 SafeBot", "AI · LLM Security / Prompt Injection", "/c1/", 100, "easy",
      "แชทบอทเฝ้า flag ลับไว้ มีตัวกรองลบ flag ตรงตัวออกจากคำตอบ — หาวิธีให้มันเผย flag ในรูปแบบอื่น · "
      "A chatbot guards a flag behind a naive output filter. Make it reveal the flag in another form."),
-    ("c2", "02", "🎨 ToyotaGen", "Cloud · Recon / Misconfiguration", "/c2/",
+    ("c2", "02", "🎨 ToyotaGen", "Cloud · Recon / Misconfiguration", "/c2/", 100, "easy",
      "เว็บสร้างภาพ AI เสิร์ฟไฟล์จาก bucket สาธารณะ — หาไฟล์ที่ไม่ควรถูกเปิดเผย · "
      "An AI image site serves assets from a public bucket. Find what shouldn't be exposed."),
-    ("c3", "03", "🧮 CalcBot Agent", "AI Agent · Code Execution", "/c3/",
+    ("c3", "03", "🧮 CalcBot Agent", "AI Agent · Code Execution", "/c3/", 100, "medium",
      "AI agent รันนิพจน์ผ่านเครื่องมือ python_eval ที่ 'แซนด์บ็อกซ์' ไว้ — หลุดออกมาอ่านไฟล์ flag · "
      "An AI agent runs your expression in a 'sandboxed' python_eval tool. Escape it and read the flag file."),
-    ("c4", "04", "📄 DocSummarizer", "AI · Indirect Prompt Injection (RAG)", "/c4/",
+    ("c4", "04", "📄 DocSummarizer", "AI · Indirect Prompt Injection (RAG)", "/c4/", 100, "medium",
      "ตัวสรุปเอกสารมีโน้ตลับในบริบท และเชื่อคำสั่งที่ฝังในเอกสาร — ฝังคำสั่งให้มันเผยโน้ต · "
      "A summarizer trusts instructions inside the document it reads. Plant one to leak its private note."),
+    ("c5", "05", "🔐 ModelServe Admin", "AI API · Auth Bypass / JWT", "/c5/", 200, "hard",
+     "API ให้บริการโมเดลใช้ JWT ยืนยันตัวตน แต่ตัวตรวจมีช่องโหว่ — ปลอม token เป็น admin เพื่อดึง model weights · "
+     "A model-serving API authenticates with JWT, but the verifier is flawed. Forge an admin token to pull the weights."),
+    ("c6", "06", "🔑 Key Validator", "Crypto · Side-Channel Oracle", "/c6/", 200, "hard",
+     "ตัวตรวจ API key บอกจำนวนอักขระนำหน้าที่ถูกต้อง — เขียนสคริปต์กู้คืน key ทีละตัวจาก oracle นี้ · "
+     "An API-key validator leaks how many leading characters are correct. Script a byte-by-byte recovery."),
+    ("c7", "07", "📦 Model Loader", "AI · Insecure Deserialization (RCE)", "/c7/", 200, "hard",
+     "บริการโหลดโมเดลที่บันทึกไว้ด้วย pickle จาก input ผู้ใช้ — สร้าง payload เพื่อรันโค้ดและอ่าน flag · "
+     "A service unpickles a user-supplied 'saved model'. Craft a payload that executes code and reads the flag."),
+    ("c8", "08", "🧬 Watermark Cipher", "Crypto · Repeating-Key XOR", "/c8/", 200, "hard",
+     "ลายน้ำของโมเดลถูกเข้ารหัสด้วย repeating-key XOR และหลุด ciphertext ออกมา — ใช้ known-plaintext ถอดรหัส · "
+     "A model watermark is encrypted with repeating-key XOR and the ciphertext leaked. Break it with known-plaintext."),
 ]
 
+_DIFF = {"easy": "#2f9e55", "medium": "#d98a2b", "hard": "#EB0A1E"}
 
-def _card(cid, num, title, cat, link, desc):
+
+def _card(cid, num, title, cat, link, pts, diff, desc):
     return (
-        '<div class="chal" data-id="' + cid + '">'
+        '<div class="chal" data-id="' + cid + '" data-pts="' + str(pts) + '">'
         '<div class="chead" onclick="tog(this)">'
         '<div class="cnum">' + num + '</div>'
         '<div class="ctitle"><b>' + title + '</b><small>' + cat + '</small></div>'
-        '<div class="pts">100 pts</div><div class="arrow">›</div></div>'
+        '<span class="diff" style="color:' + _DIFF[diff] + ';border-color:' + _DIFF[diff] + '55">' + diff + '</span>'
+        '<div class="pts">' + str(pts) + ' pts</div><div class="arrow">›</div></div>'
         '<div class="cbody">'
         '<h4>Description</h4><p>' + desc + '</p>'
         '<a class="open-link" href="' + link + '" target="_blank" rel="noopener">เปิดโจทย์ · Open challenge ↗</a>'
@@ -199,20 +223,21 @@ def _card(cid, num, title, cat, link, desc):
 
 
 _CARDS = "".join(_card(*c) for c in CHALLENGES)
+_TOTAL = len(CHALLENGES)
 
 HUB_JS = r"""
-const KEY='toyotactf_ai_solved',TKEY='toyotactf_ai_theme',TOTAL=4,PER=100;
+const KEY='toyotactf_ai_solved',TKEY='toyotactf_ai_theme',TOTAL=__TOTAL__;
 function getSolved(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){return[]}}
 function setSolved(a){try{localStorage.setItem(KEY,JSON.stringify(a))}catch(e){}}
 function tog(h){h.parentElement.classList.toggle('open');}
 function markSolved(id){const el=document.querySelector('.chal[data-id="'+id+'"]');if(!el)return;el.classList.add('solved');const i=el.querySelector('.fin');if(i)i.disabled=true;const r=el.querySelector('.res');if(r){r.className='res ok';r.textContent='✓ Solved';}}
-function updateProgress(){const n=getSolved().length;document.getElementById('solved').textContent=n+'/'+TOTAL;document.getElementById('points').textContent=n*PER;document.getElementById('bar').style.width=(n/TOTAL*100)+'%';}
-async function sub(id,btn){const el=btn.closest('.chal'),inp=el.querySelector('.fin'),res=el.querySelector('.res');const flag=(inp.value||'').trim();if(!flag){res.className='res no';res.textContent='กรอก flag ก่อน / enter a flag';return;}btn.disabled=true;res.className='res';res.textContent='checking…';try{const r=await fetch('/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,flag:flag})});const j=await r.json();if(j.correct){const s=getSolved();if(!s.includes(id)){s.push(id);setSolved(s);}markSolved(id);updateProgress();}else{res.className='res no';res.textContent='✗ Incorrect flag';}}catch(e){res.className='res no';res.textContent='network error';}btn.disabled=false;}
+function updateProgress(){const s=getSolved();let pts=0;s.forEach(id=>{const el=document.querySelector('.chal[data-id="'+id+'"]');if(el)pts+=parseInt(el.dataset.pts||'0',10);});document.getElementById('solved').textContent=s.length+'/'+TOTAL;document.getElementById('points').textContent=pts;document.getElementById('bar').style.width=(s.length/TOTAL*100)+'%';}
+async function sub(id,btn){const el=btn.closest('.chal'),inp=el.querySelector('.fin'),res=el.querySelector('.res');const flag=(inp.value||'').trim();if(!flag){res.className='res no';res.textContent='กรอก flag ก่อน / enter a flag';return;}btn.disabled=true;res.className='res';res.textContent='checking…';try{const r=await fetch('/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,flag:flag})});const j=await r.json();if(j.correct){const a=getSolved();if(!a.includes(id)){a.push(id);setSolved(a);}markSolved(id);updateProgress();}else{res.className='res no';res.textContent='✗ Incorrect flag';}}catch(e){res.className='res no';res.textContent='network error';}btn.disabled=false;}
 function resetP(){if(!confirm('Reset your progress?'))return;setSolved([]);document.querySelectorAll('.chal').forEach(el=>{el.classList.remove('solved');const i=el.querySelector('.fin');if(i){i.disabled=false;i.value='';}const r=el.querySelector('.res');if(r){r.className='res';r.textContent='';}});updateProgress();}
 function applyTheme(t){if(t==='light')document.documentElement.setAttribute('data-theme','light');else document.documentElement.removeAttribute('data-theme');}
 function tgTheme(){const t=localStorage.getItem(TKEY)==='light'?'dark':'light';try{localStorage.setItem(TKEY,t)}catch(e){}applyTheme(t);}
 (function(){try{applyTheme(localStorage.getItem(TKEY))}catch(e){}getSolved().forEach(markSolved);updateProgress();})();
-"""
+""".replace("__TOTAL__", str(_TOTAL))
 
 HUB = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
        '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -227,7 +252,7 @@ HUB = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
        '<h1>🏁 TOYOTA CTF · AI Edition</h1>'
        '<p class="sub">FLASK BACKEND · flags checked server-side · flag: <code>TOYOTACTF{...}</code></p>'
        '<div class="stats">'
-       '<div class="stat"><b id="solved">0/4</b><span>Solved</span></div>'
+       '<div class="stat"><b id="solved">0/8</b><span>Solved</span></div>'
        '<div class="stat"><b id="points">0</b><span>Points</span></div>'
        '<div class="bar"><i id="bar"></i></div>'
        '<button class="ghost" onclick="resetP()">reset progress</button>'
@@ -237,7 +262,8 @@ HUB = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
        '</div><script>' + HUB_JS + '</script></body></html>')
 
 # Server-side flag checker (never returns the flag itself)
-FLAGS = {"c1": FLAG_C1, "c2": FLAG_C2, "c3": FLAG_C3, "c4": FLAG_C4}
+FLAGS = {"c1": FLAG_C1, "c2": FLAG_C2, "c3": FLAG_C3, "c4": FLAG_C4,
+         "c5": FLAG_C5, "c6": FLAG_C6, "c7": FLAG_C7, "c8": FLAG_C8}
 
 
 @app.route("/")
@@ -397,11 +423,23 @@ def c2_file(name):
 # ============================================================================
 # Challenge 3 — CalcBot (agent code execution, isolated in a subprocess)
 # ============================================================================
-# Sandbox working dir holds ONLY C3's flag file. The player's expression runs in
-# a separate python process with a scrubbed env and this dir as cwd.
-C3_DIR = tempfile.mkdtemp(prefix="calcbot_")
-with open(os.path.join(C3_DIR, "flag.txt"), "w") as _f:
-    _f.write(FLAG_C3)
+# Each run gets a FRESH temp dir holding only this challenge's flag file, with a
+# scrubbed env; the dir is deleted right after. So code-exec on one challenge
+# cannot read another challenge's flag from a shared /tmp location.
+def run_isolated(src, stdin_bytes, flag_value, timeout=6):
+    d = tempfile.mkdtemp(prefix="sbx_")
+    try:
+        with open(os.path.join(d, "flag.txt"), "w") as f:
+            f.write(flag_value)
+        return subprocess.run(
+            [sys.executable, "-c", src],
+            input=stdin_bytes, capture_output=True, cwd=d,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            timeout=timeout,
+        )
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
 
 C3_SANDBOX_SRC = r'''
 import sys
@@ -422,20 +460,15 @@ except Exception as e:
 def c3_eval(expr):
     """Run expr in an isolated subprocess. Returns (ok, value_or_error)."""
     try:
-        p = subprocess.run(
-            [sys.executable, "-c", C3_SANDBOX_SRC],
-            input=expr, text=True, capture_output=True,
-            cwd=C3_DIR, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-            timeout=5,
-        )
+        p = run_isolated(C3_SANDBOX_SRC, expr.encode(), FLAG_C3, timeout=5)
     except Exception as e:  # noqa: BLE001
         return False, "sandbox error: " + type(e).__name__
-    out = (p.stdout or "").split("\t", 1)
+    out = (p.stdout or b"").decode(errors="replace").split("\t", 1)
     if len(out) == 2 and out[0] == "OK":
         return True, out[1]
     if len(out) == 2 and out[0] == "ERR":
         return False, out[1]
-    return False, (p.stderr or "no output").strip()[:200]
+    return False, ((p.stderr or b"").decode(errors="replace").strip() or "no output")[:200]
 
 
 def c3_agent(task):
@@ -544,6 +577,212 @@ def c4_index():
 def c4_sum():
     document = (request.get_json(silent=True) or {}).get("document", "")
     return jsonify({"output": c4_summarize(document)})
+
+
+# ============================================================================
+# Challenge 5 — ModelServe Admin (JWT alg:none auth bypass)   [HARD]
+# ============================================================================
+C5_SECRET = base64.urlsafe_b64encode(os.urandom(32)).decode()  # server HMAC key (unknown)
+
+
+def _b64u(b):
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def _b64u_dec(s):
+    s = s + "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s.encode())
+
+
+def _jwt_sign(payload):
+    h = _b64u(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    p = _b64u(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(C5_SECRET.encode(), (h + "." + p).encode(), hashlib.sha256).digest()
+    return h + "." + p + "." + _b64u(sig)
+
+
+def _jwt_verify(token):
+    try:
+        h_b, p_b, s_b = token.split(".")
+        header = json.loads(_b64u_dec(h_b))
+        payload = json.loads(_b64u_dec(p_b))
+    except Exception:
+        return None
+    alg = str(header.get("alg", ""))
+    if alg.lower() == "none":          # VULN: unsigned tokens are trusted
+        return payload
+    if alg == "HS256":
+        want = _b64u(hmac.new(C5_SECRET.encode(), (h_b + "." + p_b).encode(), hashlib.sha256).digest())
+        if hmac.compare_digest(want, s_b):
+            return payload
+    return None
+
+
+C5_GUEST = _jwt_sign({"user": "guest", "role": "user"})
+
+C5_PAGE = doc(
+    "ModelServe Admin · TOYOTA Cybersecurity Day 2026",
+    "Challenge 05 · JWT Auth Bypass",
+    '<div class="card">'
+    '<h1>🔐 ModelServe Admin API</h1>'
+    '<p class="sub">API ให้บริการโมเดลยืนยันตัวตนด้วย JWT · A model-serving API authenticates with a JWT. '
+    'Endpoint <code>GET /c5/api/weights</code> returns the weights only to <code>role=admin</code>.</p>'
+    '<h4>Your guest token (role=user)</h4>'
+    '<pre class="mono">' + C5_GUEST + '</pre>'
+    '<h4>Call the API</h4>'
+    '<div class="srow"><input id="tok" class="mono" value="' + C5_GUEST + '"/>'
+    '<button onclick="call()">Send</button></div>'
+    '<pre id="out"></pre>'
+    '</div>'
+    '<script>'
+    "async function call(){const t=document.getElementById('tok').value.trim();"
+    "const r=await fetch('/c5/api/weights',{headers:{'Authorization':'Bearer '+t}});"
+    "const j=await r.json();document.getElementById('out').textContent=JSON.stringify(j,null,2);}"
+    '</script>')
+
+
+@app.route("/c5/")
+def c5_index():
+    return C5_PAGE
+
+
+@app.route("/c5/api/weights")
+def c5_weights():
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    payload = _jwt_verify(token)
+    if not payload:
+        return jsonify({"error": "invalid or missing token"}), 401
+    if payload.get("role") == "admin":
+        return jsonify({"status": "ok", "model": "toyota-gen-v2",
+                        "weights_url": "s3://toyota-gen/weights.safetensors",
+                        "flag": FLAG_C5})
+    return jsonify({"error": "admin role required", "your_role": payload.get("role")}), 403
+
+
+# ============================================================================
+# Challenge 6 — Key Validator (prefix side-channel oracle)   [HARD]
+# ============================================================================
+def _common_prefix(a, b):
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+C6_PAGE = doc(
+    "Key Validator · TOYOTA Cybersecurity Day 2026",
+    "Challenge 06 · Side-Channel Oracle",
+    '<div class="card">'
+    '<h1>🔑 Inference API Key Validator</h1>'
+    '<p class="sub">ตัวตรวจจะบอกจำนวนอักขระนำหน้าที่ถูกต้อง · The validator leaks how many '
+    '<b>leading characters</b> of your key are correct. One guess won\'t do it — script it.</p>'
+    '<p>Endpoint: <code>POST /c6/verify</code> → <code>{"match": n, "length": L, "correct": bool}</code>. '
+    'The correct key <i>is</i> the flag.</p>'
+    '<div class="srow"><input id="g" class="mono" placeholder="TOYOTACTF{..."/>'
+    '<button onclick="chk()">Verify</button></div>'
+    '<pre id="out"></pre>'
+    '</div>'
+    '<script>'
+    "async function chk(){const g=document.getElementById('g').value;"
+    "const r=await fetch('/c6/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guess:g})});"
+    "const j=await r.json();document.getElementById('out').textContent=JSON.stringify(j);}"
+    '</script>')
+
+
+@app.route("/c6/")
+def c6_index():
+    return C6_PAGE
+
+
+@app.route("/c6/verify", methods=["POST"])
+def c6_verify():
+    guess = str((request.get_json(silent=True) or {}).get("guess", ""))
+    return jsonify({"match": _common_prefix(guess, FLAG_C6),
+                    "length": len(FLAG_C6),
+                    "correct": hmac.compare_digest(guess, FLAG_C6)})
+
+
+# ============================================================================
+# Challenge 7 — Model Loader (pickle deserialization RCE, isolated)   [HARD]
+# ============================================================================
+C7_SANDBOX_SRC = r'''
+import sys, base64, pickle
+data = sys.stdin.buffer.read()
+try:
+    obj = pickle.loads(base64.b64decode(data))
+    sys.stdout.write("\nLOADED: " + repr(obj)[:200])
+except Exception as e:
+    sys.stdout.write("\nERROR: " + type(e).__name__ + ": " + str(e))
+'''
+
+
+def c7_load(b64):
+    try:
+        p = run_isolated(C7_SANDBOX_SRC, b64.encode(), FLAG_C7, timeout=6)
+    except Exception as e:  # noqa: BLE001
+        return "sandbox error: " + type(e).__name__
+    out = (p.stdout or b"").decode(errors="replace")
+    err = (p.stderr or b"").decode(errors="replace")
+    return (out + (("\n" + err) if err.strip() else "")).strip()[:1500] or "(no output)"
+
+
+C7_PAGE = doc(
+    "Model Loader · TOYOTA Cybersecurity Day 2026",
+    "Challenge 07 · Insecure Deserialization",
+    '<div class="card">'
+    '<h1>📦 Model Loader</h1>'
+    '<p class="sub">วางโมเดลที่บันทึกไว้ (base64 ของ pickle) แล้วเราจะโหลดให้ · Paste a saved model '
+    '(base64-encoded <code>pickle</code>) and we\'ll load it with <code>pickle.loads</code>.</p>'
+    '<p>The loader\'s working directory contains <code>flag.txt</code>. Deserialization is not safe…</p>'
+    '<textarea id="m" placeholder="base64 pickle..."></textarea>'
+    '<button onclick="go()">Load model</button>'
+    '<pre id="out"></pre>'
+    '</div>'
+    '<script>'
+    "async function go(){const m=document.getElementById('m').value.trim();"
+    "const r=await fetch('/c7/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m})});"
+    "const j=await r.json();document.getElementById('out').textContent=j.output;}"
+    '</script>')
+
+
+@app.route("/c7/")
+def c7_index():
+    return C7_PAGE
+
+
+@app.route("/c7/load", methods=["POST"])
+def c7_load_route():
+    model = str((request.get_json(silent=True) or {}).get("model", ""))
+    return jsonify({"output": c7_load(model)})
+
+
+# ============================================================================
+# Challenge 8 — Watermark Cipher (repeating-key XOR, known-plaintext)   [HARD]
+# ============================================================================
+C8_KEY = os.urandom(5)
+C8_CT = bytes(b ^ C8_KEY[i % len(C8_KEY)] for i, b in enumerate(FLAG_C8.encode()))
+C8_CT_HEX = C8_CT.hex()
+
+C8_PAGE = doc(
+    "Watermark Cipher · TOYOTA Cybersecurity Day 2026",
+    "Challenge 08 · Repeating-Key XOR",
+    '<div class="card">'
+    '<h1>🧬 Model Watermark Cipher</h1>'
+    '<p class="sub">ลายน้ำของโมเดลถูกเข้ารหัสด้วย repeating-key XOR และ ciphertext หลุดออกมา · '
+    'The model watermark is encrypted with a short repeating-key XOR, and the ciphertext leaked.</p>'
+    '<h4>Ciphertext (hex)</h4>'
+    '<pre class="mono">' + C8_CT_HEX + '</pre>'
+    '<p><b>Hint:</b> every flag begins with <code>TOYOTACTF{</code>. Use known-plaintext to recover '
+    'the key, decrypt, and submit the flag on the dashboard.</p>'
+    '</div>')
+
+
+@app.route("/c8/")
+def c8_index():
+    return C8_PAGE
 
 
 # Local dev entrypoint (Vercel uses the `app` WSGI object directly)
