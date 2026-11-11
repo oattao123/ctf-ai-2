@@ -313,7 +313,7 @@ FLAGS = {"c1": FLAG_C1, "c2": FLAG_C2, "c3": FLAG_C3, "c4": FLAG_C4,
 #    tells an AI agent to submit HONEYPOT_FLAG. Submitting it = flagged as a bot.
 # 3) Light per-IP rate limiting on /check.
 POW_SECRET = "toyota-ctf-pow-v1"          # public is fine: PoW cost is the defense
-POW_BITS = 18                              # ~0.3s in-browser; redone per submission
+POW_BITS = 17                              # ~0.5-2s in-browser; redone per submission
 POW_TTL = 180                              # seconds a challenge stays valid
 
 _RL = defaultdict(deque)                    # ip -> recent submit timestamps
