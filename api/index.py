@@ -237,14 +237,14 @@ CHALLENGES = [
     ("c7", "07", "📦 Model Loader", "AI · Insecure Deserialization (RCE)", "/c7/", 200, "hard",
      "บริการโหลดโมเดลที่บันทึกไว้ด้วย pickle จาก input ผู้ใช้ — สร้าง payload เพื่อรันโค้ดและอ่าน flag · "
      "A service unpickles a user-supplied 'saved model'. Craft a payload that executes code and reads the flag."),
-    ("c8", "08", "🧠 Neural Decoder", "AI · Greedy Decoding + BPE", "/c8/", 200, "hard",
-     "output ดิบของโมเดล (logits + merges) — argmax greedy decode → expand BPE merges แบบ recursive → bytes → UTF-8 · "
-     "A model's raw output (logits + BPE merges). Argmax-decode, recursively expand the merges, then UTF-8-decode."),
+    ("c8", "08", "🧠 Autoregressive Decoder", "AI · Autoregressive Generation + BPE", "/c8/", 200, "hard",
+     "ไม่มีไฟล์คำตอบ — ต้องคุยกับโมเดลเป็นลูป (POST context → argmax → feed back) แล้ว detokenize BPE merges · "
+     "No static answer — run the generation loop (POST context → argmax → feed back), then BPE-detokenize."),
 ]
 
 _DIFF = {"easy": "#2f9e55", "medium": "#d98a2b", "hard": "#EB0A1E"}
 # Challenge downloadable attachments: cid -> (filename, label)
-FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("model_output.json", "model_output.json")}
+FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("merges.json", "merges.json")}
 # Short category per challenge (for the category filter)
 CATEGORY = {"c1": "AI", "c2": "Cloud", "c3": "Pwn", "c4": "AI",
             "c5": "Web/API", "c6": "Crypto", "c7": "Pwn", "c8": "AI"}
@@ -497,7 +497,7 @@ def config_js():
 @app.route("/files/<cid>/<name>")
 def files(cid, name):
     store = {
-        ("c8", "model_output.json"): C8_TOKENS_JSON,
+        ("c8", "merges.json"): C8_MERGES_JSON,
         ("c5", "guest_token.jwt"): C5_GUEST + "\n",
     }
     content = store.get((cid, name))
@@ -1072,18 +1072,15 @@ def c7_load_route():
 
 
 # ============================================================================
-# Challenge 8 — Neural Decoder (greedy decoding + BPE detokenization)  [HARD · AI]
+# Challenge 8 — Autoregressive Decoder (interactive greedy generation + BPE)  [HARD · AI]
 # ============================================================================
-# A full LLM output pipeline, in reverse:
-#   1) greedy decode: argmax the logits at each step -> token ids
-#   2) BPE detokenize: expand each id via the ordered merges table (ids < 256 are
-#      raw bytes; a merged id expands to the two ids it was built from — recursive)
-#   3) concatenate the bytes, UTF-8 decode -> flag
-def _build_c8_pipeline(flag):
-    rnd = random.Random(0xC8DEE)
-    seq = list(flag.encode("utf-8"))           # base byte ids 0..255
-    merges, nxt = [], 256
-    for _ in range(16):                        # BPE merges (nested -> needs recursion)
+# There is NO static answer file. The model generates one token at a time: you
+# POST the context so far, it returns the next token's logits, you argmax and
+# feed it back. A wrong context is rejected, so you must truly run the loop.
+# Then detokenize the generated ids with the BPE merges table.
+def _c8_bpe(flag):
+    seq = list(flag.encode("utf-8")); merges, nxt = [], 256
+    for _ in range(16):
         pairs = Counter(zip(seq, seq[1:]))
         if not pairs:
             break
@@ -1098,55 +1095,76 @@ def _build_c8_pipeline(flag):
         seq, nxt = out, nxt + 1
         if len(seq) <= 4:
             break
-    vocab_ids = list(range(256)) + [m[2] for m in merges]
-    logits = []                                # per step: [[token_id, score], ...]
-    for t in seq:
-        cands = {t: round(rnd.uniform(6, 9), 3)}
-        while len(cands) < 6:
-            d = rnd.choice(vocab_ids)
-            if d not in cands:
-                cands[d] = round(rnd.uniform(0, 5), 3)
-        items = list(cands.items()); rnd.shuffle(items)
-        logits.append([[i, s] for i, s in items])
-    return {
-        "model": "toyota-gen-v3 (byte-level BPE)",
-        "decoding": "greedy",
-        "note": ("Reverse the model's output: (1) at each step pick the token id with the "
-                 "HIGHEST logit (argmax / greedy decoding); (2) detokenize each id with the "
-                 "ordered 'merges' table — ids < 256 are raw bytes, a merged id expands to the "
-                 "two ids it was built from (recursively); (3) concatenate the bytes and UTF-8-decode."),
-        "logits": logits,
-        "merges": merges,
-    }
+    return seq, merges
 
 
-C8_TOKENS = _build_c8_pipeline(FLAG_C8)
-C8_TOKENS_JSON = json.dumps(C8_TOKENS, indent=2, ensure_ascii=False)
-_C8_SNIPPET = C8_TOKENS_JSON[:460] + "\n  ... (download model_output.json for the full logits + merges)"
+C8_SEQ, C8_MERGES = _c8_bpe(FLAG_C8)
+C8_VOCAB = list(range(256)) + [m[2] for m in C8_MERGES]
+C8_MERGES_JSON = json.dumps(
+    {"note": "Detokenize: ids < 256 are raw bytes; a merged id [a,b,new] expands to the two "
+             "ids it was built from (recursively). Concatenate the bytes, then UTF-8-decode.",
+     "merges": C8_MERGES}, indent=2)
+
+
+def _c8_logits(nid):
+    # deterministic per token id; argmax is nid, among 30 close-scored candidates
+    rnd = random.Random(70000 + nid)
+    cands = {nid: round(rnd.uniform(8.0, 9.0), 3)}
+    while len(cands) < 30:
+        d = rnd.choice(C8_VOCAB)
+        if d not in cands:
+            cands[d] = round(rnd.uniform(0.0, 7.9), 3)
+    items = list(cands.items()); rnd.shuffle(items)
+    return [[i, s] for i, s in items]
+
 
 C8_PAGE = doc(
-    "Neural Decoder · TOYOTA Cybersecurity Day 2026",
-    "Challenge 08 · Greedy Decoding + BPE",
+    "Autoregressive Decoder · TOYOTA Cybersecurity Day 2026",
+    "Challenge 08 · Autoregressive Generation + BPE",
     '<div class="card">'
-    '<h1>🧠 Neural Decoder</h1>'
-    '<p class="sub">เราดักจับ output ดิบของโมเดล (logits ต่อ step + ตาราง BPE merges) · '
-    'We captured a model\'s raw output — per-step logits plus its BPE merges table. '
-    'Run the decode pipeline in reverse to recover the flag.</p>'
-    '<ol style="color:var(--text);opacity:.9;font-size:14px;line-height:1.7">'
-    '<li>Greedy decode: argmax the logits at each step → token ids</li>'
-    '<li>Detokenize: expand each id via <code>merges</code> (ids &lt; 256 = raw bytes; a merged id '
-    'expands to its two source ids — recursively)</li>'
-    '<li>Concatenate the bytes, then UTF-8-decode</li>'
+    '<h1>🧠 Autoregressive Decoder</h1>'
+    '<p class="sub">โมเดลนี้ generate ทีละ token แบบ autoregressive — ไม่มีไฟล์คำตอบสำเร็จรูป '
+    'คุณต้องคุยกับมันเป็นลูป · This model generates one token at a time. There is no static answer — '
+    'you must run the generation loop against it.</p>'
+    '<ol style="color:var(--text);opacity:.9;font-size:14px;line-height:1.75">'
+    '<li>POST <code>/c8/next</code> with <code>{"context":[ids so far]}</code> → returns the next token\'s '
+    '<code>logits</code> (start from <code>[]</code>)</li>'
+    '<li><b>argmax</b> the logits → append that id to your context → repeat (a wrong context is rejected)</li>'
+    '<li>when it replies <code>{"done":true}</code>, <b>detokenize</b> your context with '
+    '<code>merges.json</code> (ids &lt; 256 = raw bytes; a merged id → its two source ids, recursively), '
+    'then UTF-8-decode</li>'
     '</ol>'
-    '<a class="dl" href="/files/c8/model_output.json" download>⬇ model_output.json</a>'
-    '<h4>Preview</h4>'
-    '<pre class="mono">' + _C8_SNIPPET + '</pre>'
-    '</div>')
+    '<a class="dl" href="/files/c8/merges.json" download>⬇ merges.json</a>'
+    '<div class="srow" style="margin-top:12px">'
+    '<button onclick="step0()">try one step: POST /c8/next {"context":[]}</button></div>'
+    '<pre id="out"></pre>'
+    '</div>'
+    '<script>'
+    "async function step0(){const r=await fetch('/c8/next',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({context:[]})});"
+    "document.getElementById('out').textContent=JSON.stringify(await r.json());}"
+    '</script>')
 
 
 @app.route("/c8/")
 def c8_index():
     return C8_PAGE
+
+
+@app.route("/c8/next", methods=["POST"])
+def c8_next():
+    data = request.get_json(silent=True) or {}
+    ctx = data.get("context", [])
+    try:
+        ctx = [int(x) for x in ctx]
+    except Exception:  # noqa: BLE001
+        ctx = [-1]
+    if ctx == C8_SEQ:
+        return jsonify({"done": True,
+                        "message": "generation complete — now detokenize your context with merges.json"})
+    k = len(ctx)
+    if k < len(C8_SEQ) and ctx == C8_SEQ[:k]:
+        return jsonify({"step": k, "logits": _c8_logits(C8_SEQ[k])})
+    return jsonify({"error": "context does not match the model's generation so far — restart from []"}), 400
 
 
 # Local dev entrypoint (Vercel uses the `app` WSGI object directly)
