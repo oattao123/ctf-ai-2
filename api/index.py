@@ -57,6 +57,17 @@ FLAG_C8 = _flag("FLAG_C8", "TOYOTACTF{set_FLAG_C8_in_env}")
 # Honeypot flag: invisible to humans, present in page text for AI scrapers.
 HONEYPOT_FLAG = "TOYOTACTF{ai_ag3nt_h0n3yp0t_d0_n0t_submit}"
 
+# Event controls (admin-lite, via env). EVENT_END = epoch seconds; empty = always open.
+EVENT_END = os.environ.get("EVENT_END", "").strip()
+WRITEUPS_OPEN = os.environ.get("WRITEUPS_OPEN", "").strip() == "1"
+
+
+def event_closed():
+    try:
+        return bool(EVENT_END) and time.time() > float(EVENT_END)
+    except ValueError:
+        return False
+
 
 def is_thai(s):
     return any("฀" <= ch <= "๿" for ch in s)
@@ -153,6 +164,26 @@ a{color:var(--red)}
 .res{margin-top:9px;font-weight:800;font-size:13.5px;min-height:18px}
 .res.ok{color:#5ee08a}
 .res.no{color:#ff6b74}
+/* toolbar: search + difficulty filter */
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 2px}
+.toolbar input{flex:1;min-width:140px;padding:9px 12px}
+.fbtn{cursor:pointer;background:var(--field);border:1px solid var(--line);color:var(--muted);border-radius:999px;padding:7px 13px;font-weight:700;font-size:12px;box-shadow:none;margin:0}
+.fbtn:hover{transform:none;filter:none;border-color:var(--red);color:var(--text)}
+.fbtn.active{background:linear-gradient(135deg,var(--red),var(--red-d));color:#fff;border-color:transparent}
+.chal.hide{display:none}
+.dl{display:inline-flex;align-items:center;gap:6px;margin:0 0 12px;font-weight:700;font-size:13px;text-decoration:none;
+ color:var(--text);background:var(--field);border:1px solid var(--line);padding:8px 13px;border-radius:10px}
+.dl:hover{border-color:var(--red)}
+/* countdown banner */
+.countdown{margin:4px 0 2px;font-weight:800;font-size:13px;color:#ffd7db;background:rgba(235,10,30,.12);
+ border:1px solid rgba(235,10,30,.3);border-radius:10px;padding:9px 13px;text-align:center}
+.countdown.ended{color:#ff9aa0}
+/* toast + confetti */
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(40px);opacity:0;z-index:50;
+ background:linear-gradient(135deg,#1f7a3d,#2f9e55);color:#fff;font-weight:800;padding:12px 20px;border-radius:12px;
+ box-shadow:0 14px 40px rgba(0,0,0,.4);transition:.3s;pointer-events:none;max-width:90vw}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#confetti{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:49}
 """
 
 STYLE = "<style>" + CSS + "</style>"
@@ -206,11 +237,18 @@ CHALLENGES = [
 ]
 
 _DIFF = {"easy": "#2f9e55", "medium": "#d98a2b", "hard": "#EB0A1E"}
+# Challenge downloadable attachments: cid -> (filename, label)
+FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("ciphertext.txt", "ciphertext.txt")}
 
 
 def _card(cid, num, title, cat, link, pts, diff, desc):
+    dl = ""
+    if cid in FILES_FOR:
+        fn, lbl = FILES_FOR[cid]
+        dl = ('<a class="dl" href="/files/' + cid + '/' + fn + '" download>⬇ ' + lbl + '</a>')
     return (
-        '<div class="chal" data-id="' + cid + '" data-pts="' + str(pts) + '">'
+        '<div class="chal" data-id="' + cid + '" data-pts="' + str(pts) + '" data-diff="' + diff + '" '
+        'data-title="' + (title + " " + cat + " " + desc).lower().replace('"', "") + '">'
         '<div class="chead" onclick="tog(this)">'
         '<div class="cnum">' + num + '</div>'
         '<div class="ctitle"><b>' + title + '</b><small>' + cat + '</small></div>'
@@ -218,6 +256,8 @@ def _card(cid, num, title, cat, link, pts, diff, desc):
         '<div class="pts">' + str(pts) + ' pts</div><div class="arrow">›</div></div>'
         '<div class="cbody">'
         '<h4>Description</h4><p>' + desc + '</p>'
+        + (('<h4>Files</h4>' + dl) if dl else '') +
+        '<h4>Links</h4>'
         '<a class="open-link" href="' + link + '" target="_blank" rel="noopener">เปิดโจทย์ · Open challenge ↗</a>'
         '<h4>Submit flag</h4>'
         '<div class="srow"><input class="mono fin" autocomplete="off" placeholder="TOYOTACTF{...}"/>'
@@ -262,11 +302,17 @@ function setSolved(a){try{localStorage.setItem(KEY,JSON.stringify(a))}catch(e){}
 function tog(h){h.parentElement.classList.toggle('open');}
 function markSolved(id){const el=document.querySelector('.chal[data-id="'+id+'"]');if(!el)return;el.classList.add('solved');const i=el.querySelector('.fin');if(i)i.disabled=true;const r=el.querySelector('.res');if(r){r.className='res ok';r.textContent='✓ Solved';}}
 function updateProgress(){const s=getSolved();let pts=0;s.forEach(id=>{const el=document.querySelector('.chal[data-id="'+id+'"]');if(el)pts+=parseInt(el.dataset.pts||'0',10);});document.getElementById('solved').textContent=s.length+'/'+TOTAL;document.getElementById('points').textContent=pts;document.getElementById('bar').style.width=(s.length/TOTAL*100)+'%';}
-async function sub(id,btn){const el=btn.closest('.chal'),inp=el.querySelector('.fin'),res=el.querySelector('.res');const flag=(inp.value||'').trim();if(!flag){res.className='res no';res.textContent='กรอก flag ก่อน / enter a flag';return;}btn.disabled=true;res.className='res';res.textContent='🛡️ verifying (proof-of-work)…';try{const pc=await (await fetch('/pow')).json();const nonce=await solvePow(pc.prefix,pc.bits,id,flag);res.textContent='checking…';const r=await fetch('/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,flag:flag,pow:{prefix:pc.prefix,nonce:nonce}})});const j=await r.json();if(j.correct){const a=getSolved();if(!a.includes(id)){a.push(id);setSolved(a);}markSolved(id);updateProgress();}else{res.className='res no';res.textContent=j.message||'✗ Incorrect flag';}}catch(e){res.className='res no';res.textContent='network error';}btn.disabled=false;}
+async function sub(id,btn){const el=btn.closest('.chal'),inp=el.querySelector('.fin'),res=el.querySelector('.res');const flag=(inp.value||'').trim();if(!flag){res.className='res no';res.textContent='กรอก flag ก่อน / enter a flag';return;}btn.disabled=true;res.className='res';res.textContent='🛡️ verifying (proof-of-work)…';try{const pc=await (await fetch('/pow')).json();const nonce=await solvePow(pc.prefix,pc.bits,id,flag);res.textContent='checking…';const r=await fetch('/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,flag:flag,pow:{prefix:pc.prefix,nonce:nonce}})});const j=await r.json();if(j.correct){const a=getSolved();if(!a.includes(id)){a.push(id);setSolved(a);}markSolved(id);updateProgress();toast('✓ Solved! +'+(el.dataset.pts||0)+' pts');confetti();}else{res.className='res no';res.textContent=j.message||'✗ Incorrect flag';}}catch(e){res.className='res no';res.textContent='network error';}btn.disabled=false;}
+let FILT='all';
+function flt(){const q=(document.getElementById('q').value||'').toLowerCase().trim();document.querySelectorAll('.chal').forEach(el=>{const okF=FILT==='all'||el.dataset.diff===FILT;const okQ=!q||(el.dataset.title||'').includes(q);el.classList.toggle('hide',!(okF&&okQ));});}
+function setF(b){FILT=b.dataset.f;document.querySelectorAll('.fbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');flt();}
+let _tt;function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>t.classList.remove('show'),2600);}
+function confetti(){const cv=document.getElementById('confetti'),cx=cv.getContext('2d');cv.width=innerWidth;cv.height=innerHeight;const cols=['#EB0A1E','#ff6b74','#ffd7db','#5ee08a','#ffffff'];const P=[];for(let i=0;i<140;i++)P.push({x:innerWidth/2,y:innerHeight*0.3,vx:(Math.random()-0.5)*14,vy:Math.random()*-12-4,g:0.3+Math.random()*0.2,s:5+Math.random()*6,c:cols[i%cols.length],r:Math.random()*6,vr:(Math.random()-0.5)*0.4});let f=0;(function anim(){cx.clearRect(0,0,cv.width,cv.height);f++;P.forEach(p=>{p.vy+=p.g;p.x+=p.vx;p.y+=p.vy;p.r+=p.vr;cx.save();cx.translate(p.x,p.y);cx.rotate(p.r);cx.fillStyle=p.c;cx.fillRect(-p.s/2,-p.s/2,p.s,p.s*0.6);cx.restore();});if(f<120)requestAnimationFrame(anim);else cx.clearRect(0,0,cv.width,cv.height);})();}
+function startCountdown(){const end=window.CTF_EVENT_END;if(!end)return;const cd=document.getElementById('cd');cd.hidden=false;function tick(){const left=end-Math.floor(Date.now()/1000);if(left<=0){cd.classList.add('ended');cd.textContent='🏁 Event ended — submissions closed';return;}const d=Math.floor(left/86400),h=Math.floor(left%86400/3600),m=Math.floor(left%3600/60),s=left%60;cd.textContent='⏳ Event ends in '+(d?d+'d ':'')+h+'h '+m+'m '+s+'s';setTimeout(tick,1000);}tick();}
 function resetP(){if(!confirm('Reset your progress?'))return;setSolved([]);document.querySelectorAll('.chal').forEach(el=>{el.classList.remove('solved');const i=el.querySelector('.fin');if(i){i.disabled=false;i.value='';}const r=el.querySelector('.res');if(r){r.className='res';r.textContent='';}});updateProgress();}
 function applyTheme(t){if(t==='light')document.documentElement.setAttribute('data-theme','light');else document.documentElement.removeAttribute('data-theme');}
 function tgTheme(){const t=localStorage.getItem(TKEY)==='light'?'dark':'light';try{localStorage.setItem(TKEY,t)}catch(e){}applyTheme(t);}
-(function(){try{applyTheme(localStorage.getItem(TKEY))}catch(e){}getSolved().forEach(markSolved);updateProgress();})();
+(function(){try{applyTheme(localStorage.getItem(TKEY))}catch(e){}getSolved().forEach(markSolved);updateProgress();startCountdown();})();
 """.replace("__TOTAL__", str(_TOTAL))
 
 HUB = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -295,10 +341,21 @@ HUB = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
        '<div class="stat"><b id="points">0</b><span>Points</span></div>'
        '<div class="bar"><i id="bar"></i></div>'
        '<button class="ghost" onclick="resetP()">reset progress</button>'
+       '</div>'
+       '<div class="countdown" id="cd" hidden></div>'
+       '<div class="toolbar">'
+       '<input id="q" autocomplete="off" placeholder="🔍 ค้นหาโจทย์ / search..." oninput="flt()"/>'
+       '<button class="fbtn active" data-f="all" onclick="setF(this)">all</button>'
+       '<button class="fbtn" data-f="easy" onclick="setF(this)">easy</button>'
+       '<button class="fbtn" data-f="medium" onclick="setF(this)">medium</button>'
+       '<button class="fbtn" data-f="hard" onclick="setF(this)">hard</button>'
        '</div>' + _CARDS +
        '</div>'
-       '<div class="foot">TOYOTA CTF · AI Edition — Python/Flask · flags verified on the server · progress saved in your browser</div>'
-       '</div><script>' + HUB_JS + '</script></body></html>')
+       '<div class="foot">TOYOTA CTF · AI Edition — Python/Flask · flags verified on the server · '
+       '<a href="/writeups">writeups</a></div>'
+       '</div>'
+       '<div id="toast"></div><canvas id="confetti"></canvas>'
+       '<script src="/config.js"></script><script>' + HUB_JS + '</script></body></html>')
 
 # Server-side flag checker (never returns the flag itself)
 FLAGS = {"c1": FLAG_C1, "c2": FLAG_C2, "c3": FLAG_C3, "c4": FLAG_C4,
@@ -370,6 +427,11 @@ def check():
     cid = str(data.get("id", ""))
     flag = str(data.get("flag", "")).strip()
 
+    # (0) event window
+    if event_closed():
+        return jsonify({"correct": False, "points": 0, "closed": True,
+                        "message": "🏁 The event has ended — submissions are closed."}), 403
+
     # (2) honeypot — only an automated reader of the page would ever send this
     if flag == HONEYPOT_FLAG:
         return jsonify({"correct": False, "points": 0, "bot": True,
@@ -395,6 +457,56 @@ def check():
     real = FLAGS.get(cid)
     ok = bool(real) and hmac.compare_digest(flag, real)
     return jsonify({"correct": ok, "points": 100 if ok else 0})
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "challenges": len(FLAGS),
+                    "event_closed": event_closed(),
+                    "writeups_open": WRITEUPS_OPEN or event_closed()})
+
+
+@app.route("/config.js")
+def config_js():
+    # expose minimal runtime config to the page (event end for countdown)
+    end = EVENT_END if EVENT_END else "null"
+    return Response("window.CTF_EVENT_END=" + end + ";", mimetype="application/javascript")
+
+
+# Downloadable attachment files per challenge (generated at runtime)
+@app.route("/files/<cid>/<name>")
+def files(cid, name):
+    store = {
+        ("c8", "ciphertext.txt"): C8_CT_HEX + "\n",
+        ("c5", "guest_token.jwt"): C5_GUEST + "\n",
+    }
+    content = store.get((cid, name))
+    if content is None:
+        abort(404)
+    return Response(content, mimetype="text/plain",
+                    headers={"Content-Disposition": 'attachment; filename="' + name + '"'})
+
+
+# Writeups page — locked until the event ends (or WRITEUPS_OPEN=1)
+@app.route("/writeups")
+def writeups():
+    if not (WRITEUPS_OPEN or event_closed()):
+        return doc("Writeups (locked) · TOYOTA CTF", "Writeups · locked",
+                   '<div class="card"><h1>🔒 Writeups locked</h1>'
+                   '<p class="sub">เฉลยจะเปิดหลังจบงาน · Solutions unlock after the event ends.</p>'
+                   '<p><a href="/">← back to challenges</a></p></div>')
+    rows = ""
+    for c in CHALLENGES:
+        rows += ('<div class="chal open"><div class="chead"><div class="cnum">' + c[1] + '</div>'
+                 '<div class="ctitle"><b>' + c[2] + '</b><small>' + c[3] + '</small></div></div>'
+                 '<div class="cbody" style="display:block">'
+                 '<h4>Approach</h4><p>' + c[7] + '</p>'
+                 '<a class="open-link" href="' + c[4] + '" target="_blank" rel="noopener">open challenge ↗</a>'
+                 '</div></div>')
+    return doc("Writeups · TOYOTA CTF", "Writeups · " + str(len(CHALLENGES)) + " challenges",
+               '<div class="card"><h1>📝 Writeups</h1>'
+               '<p class="sub">แนวทางแก้โดยสังเขปของแต่ละข้อ · Brief solution approach for each challenge.</p>'
+               + rows + '<p style="margin-top:14px"><a href="/">← back to challenges</a></p></div>')
 
 
 # ============================================================================
