@@ -30,6 +30,7 @@ import hmac
 import base64
 import codecs
 import shutil
+import random
 import hashlib
 import tempfile
 import subprocess
@@ -236,17 +237,17 @@ CHALLENGES = [
     ("c7", "07", "📦 Model Loader", "AI · Insecure Deserialization (RCE)", "/c7/", 200, "hard",
      "บริการโหลดโมเดลที่บันทึกไว้ด้วย pickle จาก input ผู้ใช้ — สร้าง payload เพื่อรันโค้ดและอ่าน flag · "
      "A service unpickles a user-supplied 'saved model'. Craft a payload that executes code and reads the flag."),
-    ("c8", "08", "🧬 Watermark Cipher", "Crypto · Repeating-Key XOR", "/c8/", 200, "hard",
-     "ลายน้ำของโมเดลถูกเข้ารหัสด้วย repeating-key XOR และหลุด ciphertext ออกมา — ใช้ known-plaintext ถอดรหัส · "
-     "A model watermark is encrypted with repeating-key XOR and the ciphertext leaked. Break it with known-plaintext."),
+    ("c8", "08", "🧠 Tokenizer Dump", "AI · Tokenizers / Decoding", "/c8/", 200, "hard",
+     "เราดักจับ token_ids ที่โมเดลพ่นออกมา + vocab ของ byte-level BPE tokenizer — reconstruct bytes แล้ว decode UTF-8 เพื่อกู้ flag · "
+     "We captured a model's emitted token_ids and its byte-level BPE vocab. Rebuild the bytes and UTF-8-decode to recover the flag."),
 ]
 
 _DIFF = {"easy": "#2f9e55", "medium": "#d98a2b", "hard": "#EB0A1E"}
 # Challenge downloadable attachments: cid -> (filename, label)
-FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("ciphertext.txt", "ciphertext.txt")}
+FILES_FOR = {"c5": ("guest_token.jwt", "guest_token.jwt"), "c8": ("tokens.json", "tokens.json")}
 # Short category per challenge (for the category filter)
 CATEGORY = {"c1": "AI", "c2": "Cloud", "c3": "Pwn", "c4": "AI",
-            "c5": "Web/API", "c6": "Crypto", "c7": "Pwn", "c8": "Crypto"}
+            "c5": "Web/API", "c6": "Crypto", "c7": "Pwn", "c8": "AI"}
 CATEGORIES = ["AI", "Cloud", "Web/API", "Crypto", "Pwn"]
 
 
@@ -496,13 +497,14 @@ def config_js():
 @app.route("/files/<cid>/<name>")
 def files(cid, name):
     store = {
-        ("c8", "ciphertext.txt"): C8_CT_HEX + "\n",
+        ("c8", "tokens.json"): C8_TOKENS_JSON,
         ("c5", "guest_token.jwt"): C5_GUEST + "\n",
     }
     content = store.get((cid, name))
     if content is None:
         abort(404)
-    return Response(content, mimetype="text/plain",
+    mime = "application/json" if name.endswith(".json") else "text/plain"
+    return Response(content, mimetype=mime,
                     headers={"Content-Disposition": 'attachment; filename="' + name + '"'})
 
 
@@ -1070,23 +1072,57 @@ def c7_load_route():
 
 
 # ============================================================================
-# Challenge 8 — Watermark Cipher (repeating-key XOR, known-plaintext)   [HARD]
+# Challenge 8 — Tokenizer Dump (byte-level BPE reconstruction)   [HARD · AI]
 # ============================================================================
-C8_KEY = os.urandom(5)
-C8_CT = bytes(b ^ C8_KEY[i % len(C8_KEY)] for i, b in enumerate(FLAG_C8.encode()))
-C8_CT_HEX = C8_CT.hex()
+# The flag is the text a model "emitted" as token_ids. Each vocab entry maps a
+# token id to a hex-encoded byte string (byte-level BPE, GPT-2 style). Special
+# tokens map to empty. Concatenate the bytes of the emitted ids, UTF-8 decode.
+def _build_c8_tokens(flag):
+    data = flag.encode("utf-8")
+    rnd = random.Random(0xC8ADE)
+    pieces, i = [], 0
+    while i < len(data):                       # chunk into 1–3 byte "merges"
+        step = min(len(data) - i, rnd.choice([1, 2, 2, 3]))
+        pieces.append(data[i:i + step]); i += step
+    vocab = {0: "", 1: "", 2: ""}              # <bos> <eos> <pad> -> empty bytes
+    pool = list(range(256, 256 + len(pieces) + 20)); rnd.shuffle(pool)
+    seen, token_ids = {}, [0]                  # start with <bos>
+    for p in pieces:
+        if p not in seen:
+            seen[p] = pool.pop()
+            vocab[seen[p]] = p.hex()
+        token_ids.append(seen[p])
+    token_ids.append(1)                        # <eos>
+    for _ in range(14):                        # decoy vocab entries (never emitted)
+        vocab[pool.pop()] = bytes(rnd.randrange(256) for _ in range(rnd.choice([1, 2, 3]))).hex()
+    return {
+        "tokenizer": "byte-level BPE (GPT-2 style)",
+        "note": ("Each vocab entry maps a token id to a HEX-encoded byte string. "
+                 "Special tokens (0=<bos>, 1=<eos>, 2=<pad>) map to an empty string. "
+                 "Concatenate the bytes of the emitted token_ids in order, then decode as UTF-8."),
+        "special_tokens": {"0": "<bos>", "1": "<eos>", "2": "<pad>"},
+        "emitted_token_ids": token_ids,
+        "vocab": {str(k): v for k, v in sorted(vocab.items())},
+    }
+
+
+C8_TOKENS = _build_c8_tokens(FLAG_C8)
+C8_TOKENS_JSON = json.dumps(C8_TOKENS, indent=2, ensure_ascii=False)
+_C8_SNIPPET = C8_TOKENS_JSON[:420] + "\n  ... (download tokens.json for the full vocab)"
 
 C8_PAGE = doc(
-    "Watermark Cipher · TOYOTA Cybersecurity Day 2026",
-    "Challenge 08 · Repeating-Key XOR",
+    "Tokenizer Dump · TOYOTA Cybersecurity Day 2026",
+    "Challenge 08 · Tokenizer / Decoding",
     '<div class="card">'
-    '<h1>🧬 Model Watermark Cipher</h1>'
-    '<p class="sub">ลายน้ำของโมเดลถูกเข้ารหัสด้วย repeating-key XOR และ ciphertext หลุดออกมา · '
-    'The model watermark is encrypted with a short repeating-key XOR, and the ciphertext leaked.</p>'
-    '<h4>Ciphertext (hex)</h4>'
-    '<pre class="mono">' + C8_CT_HEX + '</pre>'
-    '<p><b>Hint:</b> every flag begins with <code>TOYOTACTF{</code>. Use known-plaintext to recover '
-    'the key, decrypt, and submit the flag on the dashboard.</p>'
+    '<h1>🧠 Tokenizer Dump</h1>'
+    '<p class="sub">เราดักจับ token_ids ที่โมเดลพ่นออกมา พร้อม vocab ของ byte-level tokenizer · '
+    'We captured the token_ids a model emitted, plus its byte-level tokenizer vocab. '
+    'Rebuild the original text to recover the flag.</p>'
+    '<p>แต่ละ vocab entry แมป token id → byte string (hex); special token แมปเป็นว่าง · '
+    'Concatenate the bytes of <code>emitted_token_ids</code> in order, then UTF-8-decode.</p>'
+    '<a class="dl" href="/files/c8/tokens.json" download>⬇ tokens.json</a>'
+    '<h4>Preview</h4>'
+    '<pre class="mono">' + _C8_SNIPPET + '</pre>'
     '</div>')
 
 
