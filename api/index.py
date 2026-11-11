@@ -973,7 +973,7 @@ def c5_weights():
 # ============================================================================
 # Challenge 6 — Key Validator (prefix side-channel oracle)   [HARD]
 # ============================================================================
-C6_PER_CHAR_DELAY = 0.05   # 50 ms per correct leading char -> timing side-channel
+C6_PER_CHAR_DELAY = 0.12   # 120 ms per correct leading char -> clear timing side-channel over the network
 
 C6_PAGE = doc(
     "Key Validator · TOYOTA Cybersecurity Day 2026",
