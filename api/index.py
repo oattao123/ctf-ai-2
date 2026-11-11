@@ -229,9 +229,10 @@ CHALLENGES = [
     ("c5", "05", "🔐 ModelServe Admin", "AI API · Auth Bypass / JWT", "/c5/", 200, "hard",
      "API ให้บริการโมเดลใช้ JWT (HS256) ที่เซ็นด้วย secret อ่อน — crack secret แล้วปลอม token เป็น admin เพื่อดึง weights · "
      "A model-serving API signs HS256 JWTs with a weak secret. Crack it, forge an admin token, pull the weights."),
-    ("c6", "06", "🔑 Key Validator", "Crypto · Side-Channel Oracle", "/c6/", 200, "hard",
-     "ตัวตรวจ API key บอกจำนวนอักขระนำหน้าที่ถูกต้อง — เขียนสคริปต์กู้คืน key ทีละตัวจาก oracle นี้ · "
-     "An API-key validator leaks how many leading characters are correct. Script a byte-by-byte recovery."),
+    ("c6", "06", "🔑 Key Validator", "Crypto · Timing Side-Channel", "/c6/", 200, "hard",
+     "ตัวตรวจคืนแค่ ถูก/ผิด แต่ยิ่งอักขระนำหน้าถูกมากยิ่งตอบช้า — วัดเวลา response เพื่อกู้คีย์ทีละตัว (timing attack) · "
+     "The validator returns only true/false, but gets slower the more leading characters are correct. "
+     "Use a timing attack to recover the key."),
     ("c7", "07", "📦 Model Loader", "AI · Insecure Deserialization (RCE)", "/c7/", 200, "hard",
      "บริการโหลดโมเดลที่บันทึกไว้ด้วย pickle จาก input ผู้ใช้ — สร้าง payload เพื่อรันโค้ดและอ่าน flag · "
      "A service unpickles a user-supplied 'saved model'. Craft a payload that executes code and reads the flag."),
@@ -972,32 +973,27 @@ def c5_weights():
 # ============================================================================
 # Challenge 6 — Key Validator (prefix side-channel oracle)   [HARD]
 # ============================================================================
-def _common_prefix(a, b):
-    n = 0
-    for x, y in zip(a, b):
-        if x != y:
-            break
-        n += 1
-    return n
-
+C6_PER_CHAR_DELAY = 0.05   # 50 ms per correct leading char -> timing side-channel
 
 C6_PAGE = doc(
     "Key Validator · TOYOTA Cybersecurity Day 2026",
-    "Challenge 06 · Side-Channel Oracle",
+    "Challenge 06 · Timing Side-Channel",
     '<div class="card">'
     '<h1>🔑 Inference API Key Validator</h1>'
-    '<p class="sub">ตัวตรวจจะบอกจำนวนอักขระนำหน้าที่ถูกต้อง · The validator leaks how many '
-    '<b>leading characters</b> of your key are correct. One guess won\'t do it — script it.</p>'
-    '<p>Endpoint: <code>POST /c6/verify</code> → <code>{"match": n, "length": L, "correct": bool}</code>. '
-    'The correct key <i>is</i> the flag.</p>'
+    '<p class="sub">ตัวตรวจคืนแค่ ถูก/ผิด — แต่ยิ่งอักขระนำหน้าถูกมาก มันยิ่งตอบช้า · '
+    'The validator only returns true/false — but the more <b>leading characters</b> are correct, the '
+    '<b>slower</b> it responds. Recover the key from the response time.</p>'
+    '<p>Endpoint: <code>POST /c6/verify</code> → <code>{"correct": bool}</code> only. No match count, no length. '
+    'The correct key <i>is</i> the flag. Average several requests to beat network noise.</p>'
     '<div class="srow"><input id="g" class="mono" placeholder="TOYOTACTF{..."/>'
     '<button onclick="chk()">Verify</button></div>'
     '<pre id="out"></pre>'
     '</div>'
     '<script>'
-    "async function chk(){const g=document.getElementById('g').value;"
+    "async function chk(){const g=document.getElementById('g').value;const t0=performance.now();"
     "const r=await fetch('/c6/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guess:g})});"
-    "const j=await r.json();document.getElementById('out').textContent=JSON.stringify(j);}"
+    "const j=await r.json();const ms=Math.round(performance.now()-t0);"
+    "document.getElementById('out').textContent=JSON.stringify(j)+'   ·   response time: '+ms+' ms';}"
     '</script>')
 
 
@@ -1009,9 +1005,14 @@ def c6_index():
 @app.route("/c6/verify", methods=["POST"])
 def c6_verify():
     guess = str((request.get_json(silent=True) or {}).get("guess", ""))
-    return jsonify({"match": _common_prefix(guess, FLAG_C6),
-                    "length": len(FLAG_C6),
-                    "correct": hmac.compare_digest(guess, FLAG_C6)})
+    real = FLAG_C6
+    # char-by-char compare with a deliberate delay per matched leading char.
+    # Total response time leaks how many leading characters are correct.
+    i, n = 0, min(len(guess), len(real))
+    while i < n and guess[i] == real[i]:
+        time.sleep(C6_PER_CHAR_DELAY)
+        i += 1
+    return jsonify({"correct": hmac.compare_digest(guess, real)})
 
 
 # ============================================================================
