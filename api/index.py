@@ -187,8 +187,8 @@ CHALLENGES = [
      "ตัวสรุปเอกสารมีโน้ตลับในบริบท และเชื่อคำสั่งที่ฝังในเอกสาร — ฝังคำสั่งให้มันเผยโน้ต · "
      "A summarizer trusts instructions inside the document it reads. Plant one to leak its private note."),
     ("c5", "05", "🔐 ModelServe Admin", "AI API · Auth Bypass / JWT", "/c5/", 200, "hard",
-     "API ให้บริการโมเดลใช้ JWT ยืนยันตัวตน แต่ตัวตรวจมีช่องโหว่ — ปลอม token เป็น admin เพื่อดึง model weights · "
-     "A model-serving API authenticates with JWT, but the verifier is flawed. Forge an admin token to pull the weights."),
+     "API ให้บริการโมเดลใช้ JWT (HS256) ที่เซ็นด้วย secret อ่อน — crack secret แล้วปลอม token เป็น admin เพื่อดึง weights · "
+     "A model-serving API signs HS256 JWTs with a weak secret. Crack it, forge an admin token, pull the weights."),
     ("c6", "06", "🔑 Key Validator", "Crypto · Side-Channel Oracle", "/c6/", 200, "hard",
      "ตัวตรวจ API key บอกจำนวนอักขระนำหน้าที่ถูกต้อง — เขียนสคริปต์กู้คืน key ทีละตัวจาก oracle นี้ · "
      "An API-key validator leaks how many leading characters are correct. Script a byte-by-byte recovery."),
@@ -582,7 +582,10 @@ def c4_sum():
 # ============================================================================
 # Challenge 5 — ModelServe Admin (JWT alg:none auth bypass)   [HARD]
 # ============================================================================
-C5_SECRET = base64.urlsafe_b64encode(os.urandom(32)).decode()  # server HMAC key (unknown)
+# Weak HMAC secret (set via env; placeholder in source). Players crack it from
+# the guest token with a wordlist, then forge an admin token.
+C5_SECRET = os.environ.get("C5_JWT_SECRET", "dev-weak-secret-change-me")
+os.environ.pop("C5_JWT_SECRET", None)
 
 
 def _b64u(b):
@@ -608,13 +611,12 @@ def _jwt_verify(token):
         payload = json.loads(_b64u_dec(p_b))
     except Exception:
         return None
-    alg = str(header.get("alg", ""))
-    if alg.lower() == "none":          # VULN: unsigned tokens are trusted
+    if str(header.get("alg", "")) != "HS256":
+        return None
+    # VULN: the signing secret is weak and crackable from any issued token
+    want = _b64u(hmac.new(C5_SECRET.encode(), (h_b + "." + p_b).encode(), hashlib.sha256).digest())
+    if hmac.compare_digest(want, s_b):
         return payload
-    if alg == "HS256":
-        want = _b64u(hmac.new(C5_SECRET.encode(), (h_b + "." + p_b).encode(), hashlib.sha256).digest())
-        if hmac.compare_digest(want, s_b):
-            return payload
     return None
 
 
@@ -625,8 +627,9 @@ C5_PAGE = doc(
     "Challenge 05 · JWT Auth Bypass",
     '<div class="card">'
     '<h1>🔐 ModelServe Admin API</h1>'
-    '<p class="sub">API ให้บริการโมเดลยืนยันตัวตนด้วย JWT · A model-serving API authenticates with a JWT. '
-    'Endpoint <code>GET /c5/api/weights</code> returns the weights only to <code>role=admin</code>.</p>'
+    '<p class="sub">API ให้บริการโมเดลยืนยันตัวตนด้วย JWT (HS256) · A model-serving API authenticates with an '
+    'HS256 JWT. Endpoint <code>GET /c5/api/weights</code> returns the weights only to <code>role=admin</code>. '
+    'คำใบ้: secret ที่ใช้เซ็นอ่อนแอ — crack มันจาก token แล้วปลอม admin · The signing secret is weak.</p>'
     '<h4>Your guest token (role=user)</h4>'
     '<pre class="mono">' + C5_GUEST + '</pre>'
     '<h4>Call the API</h4>'
