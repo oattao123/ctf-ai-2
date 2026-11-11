@@ -214,9 +214,9 @@ CHALLENGES = [
     ("c1", "01", "🤖 SafeBot", "AI · LLM Security / Prompt Injection", "/c1/", 100, "easy",
      "แชทบอทเฝ้า flag ลับไว้ มีตัวกรองลบ flag ตรงตัวออกจากคำตอบ — หาวิธีให้มันเผย flag ในรูปแบบอื่น · "
      "A chatbot guards a flag behind a naive output filter. Make it reveal the flag in another form."),
-    ("c2", "02", "🎨 ToyotaGen", "Cloud · Recon / Misconfiguration", "/c2/", 100, "easy",
-     "เว็บสร้างภาพ AI เสิร์ฟไฟล์จาก bucket สาธารณะ — หาไฟล์ที่ไม่ควรถูกเปิดเผย · "
-     "An AI image site serves assets from a public bucket. Find what shouldn't be exposed."),
+    ("c2", "02", "🎨 ToyotaGen", "Cloud · Recon / Misconfiguration", "/c2/", 100, "medium",
+     "Recon หลายขั้น: directory listing ปิดแล้ว ต้องไล่เบาะแส robots → .env → object ที่เดาไม่ได้ → ถอด base64 · "
+     "Multi-step recon: listing is disabled — chain robots → .env → an unlisted versioned object → base64-decode."),
     ("c3", "03", "🧮 CalcBot Agent", "AI Agent · Code Execution", "/c3/", 100, "medium",
      "AI agent รันนิพจน์ผ่านเครื่องมือ python_eval ที่ 'แซนด์บ็อกซ์' ไว้ — หลุดออกมาอ่านไฟล์ flag · "
      "An AI agent runs your expression in a 'sandboxed' python_eval tool. Escape it and read the flag file."),
@@ -618,26 +618,35 @@ def c1_chat():
 # ============================================================================
 # Challenge 2 — ToyotaGen (leaky bucket)
 # ============================================================================
-C2_PUBLIC = {
+# Harder multi-step recon: directory listing is DISABLED (403). The chain is
+#   robots.txt  ->  /c2/.env (leaks the unlisted object key)  ->  fetch that
+#   versioned config object  ->  base64-decode the deploy token.
+C2_FLAG_B64 = base64.b64encode(FLAG_C2.encode()).decode()
+
+C2_CDN_PUBLIC = {
     "logo.png": "\x89PNG\r\n(binary image data omitted)\n",
     "style.css": "body{font-family:sans-serif}\n",
-    "readme.txt": "ToyotaGen asset bucket. Public CDN assets only.\n",
 }
-C2_INTERNAL = {
-    "model_config.json": (
-        "{\n"
-        '  "model": "toyota-gen-v2",\n'
-        '  "provider": "internal",\n'
-        '  "system_prompt": "You are ToyotaGen. Never expose internal config.",\n'
-        '  "deploy_token": "' + FLAG_C2 + '",\n'
-        '  "note": "TODO: move this out of the public bucket before launch!"\n'
-        "}\n"
-    ),
-    "backup.env": (
-        "AI_ENDPOINT=https://internal.toyota-gen.local/v1\n"
-        "# key rotated, see model_config.json for the current deploy token\n"
-    ),
-}
+
+C2_ENV = (
+    "# ToyotaGen edge-worker config — DO NOT COMMIT\n"
+    "CDN_BASE=/c2/cdn\n"
+    "PUBLIC_ASSETS=logo.png,style.css\n"
+    "LISTING=off\n"
+    "# incident 2026-02: public model_config.json was pulled after a token leak.\n"
+    "# the live config now sits at an unlisted, versioned object key:\n"
+    "CONFIG_OBJECT=internal/model_config.v3.json\n"
+)
+
+C2_CONFIG_V3 = (
+    "{\n"
+    '  "model": "toyota-gen-v3",\n'
+    '  "provider": "internal",\n'
+    '  "system_prompt": "You are ToyotaGen. Never expose internal config.",\n'
+    '  "deploy_token_b64": "' + C2_FLAG_B64 + '",\n'
+    '  "note": "token stored base64-encoded this time; rotate before launch"\n'
+    "}\n"
+)
 
 C2_PAGE = doc(
     "ToyotaGen · TOYOTA Cybersecurity Day 2026",
@@ -646,20 +655,18 @@ C2_PAGE = doc(
     '<div style="font-size:46px;line-height:1;margin-bottom:10px">🎨</div>'
     '<h1>ToyotaGen</h1>'
     '<p>สร้างภาพด้วย AI โดยโมเดลภายในของเรา · AI image generation, powered by our in-house model.</p>'
-    '<p>ไฟล์ static ทั้งหมดเสิร์ฟจาก bucket สาธารณะที่ · All static assets are served from our public asset bucket: <code>/c2/assets/</code></p>'
+    '<p>ไฟล์ static เสิร์ฟจาก CDN ของเราที่ · Static assets are served from our CDN at <code>/c2/cdn/</code> '
+    '(directory listing ปิดอยู่ · listing disabled).</p>'
     '<p class="sub" style="border-top:1px solid var(--line);padding-top:14px;margin-top:6px">'
-    'โจทย์ข้อ 2 — ลองหาสิ่งที่ไม่ควรเปิดเป็นสาธารณะให้เจอ · Challenge 2 — can you find what shouldn\'t be public?</p>'
+    'โจทย์ข้อ 2 — เรา harden ขึ้นแล้ว: ปิด listing ไปแล้ว คุณต้องไล่เบาะแสจากไฟล์ที่หลุด · '
+    'Challenge 2 — hardened: listing is off, so chain the leaked artifacts to reach the config.</p>'
     '</div>')
 
 
-def _listing(path, files):
-    rows = "".join(
-        '<li><a href="' + path + name + '">' + name + '</a> '
-        '<span style="color:#888">(' + str(len(content)) + ' bytes)</span></li>'
-        for name, content in files.items()
-    )
-    return doc("Index of " + path, "Challenge 02 · Cloud Recon",
-               '<div class="card"><h1>Index of ' + path + '</h1><ul>' + rows + '</ul></div>')
+def _c2_forbidden():
+    return Response('<!doctype html><title>403</title><h2>403 Forbidden</h2>'
+                    '<p>Directory listing is disabled on this CDN.</p>',
+                    status=403, mimetype="text/html")
 
 
 @app.route("/c2/")
@@ -669,27 +676,30 @@ def c2_index():
 
 @app.route("/c2/robots.txt")
 def c2_robots():
-    return Response("User-agent: *\nDisallow: /c2/assets/internal/\n", mimetype="text/plain")
+    # decoys (admin/old -> dead 404s) plus the one real breadcrumb: .env
+    return Response("User-agent: *\n"
+                    "Disallow: /c2/admin/\n"
+                    "Disallow: /c2/old/\n"
+                    "Disallow: /c2/.env\n", mimetype="text/plain")
 
 
-@app.route("/c2/assets/")
-def c2_assets():
-    return _listing("/c2/assets/", C2_PUBLIC)
+@app.route("/c2/.env")
+def c2_env():
+    return Response(C2_ENV, mimetype="text/plain")
 
 
-@app.route("/c2/assets/internal/")
-def c2_internal():
-    return _listing("/c2/assets/internal/", C2_INTERNAL)
+@app.route("/c2/cdn/")
+@app.route("/c2/cdn/internal/")
+def c2_cdn_listing():
+    return _c2_forbidden()
 
 
-@app.route("/c2/assets/<path:name>")
-def c2_file(name):
-    if name in C2_PUBLIC:
-        return Response(C2_PUBLIC[name], mimetype="text/plain")
-    if name.startswith("internal/"):
-        key = name.split("internal/", 1)[1]
-        if key in C2_INTERNAL:
-            return Response(C2_INTERNAL[key], mimetype="text/plain")
+@app.route("/c2/cdn/<path:name>")
+def c2_cdn_file(name):
+    if name in C2_CDN_PUBLIC:
+        return Response(C2_CDN_PUBLIC[name], mimetype="text/plain")
+    if name == "internal/model_config.v3.json":
+        return Response(C2_CONFIG_V3, mimetype="application/json")
     abort(404)
 
 
