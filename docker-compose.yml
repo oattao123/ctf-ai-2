@@ -1,0 +1,40 @@
+services:
+  overconfident-bot:
+    build: ./challenge1-overconfident-bot
+    ports: ["5001:5001"]
+    restart: unless-stopped
+
+  leaky-bucket:
+    build: ./challenge2-leaky-bucket
+    ports: ["5002:5002"]
+    restart: unless-stopped
+
+  runaway-agent:
+    build: ./challenge3-runaway-agent
+    ports: ["5003:5003"]
+    restart: unless-stopped
+
+  poisoned-knowledge:
+    build: ./challenge4-poisoned-knowledge
+    ports: ["5004:5004"]
+    restart: unless-stopped
+
+  modelserve-admin:
+    build: ./challenge5-modelserve-admin
+    ports: ["5005:5005"]
+    restart: unless-stopped
+
+  key-validator:
+    build: ./challenge6-key-validator
+    ports: ["5006:5006"]
+    restart: unless-stopped
+
+  model-loader:
+    build: ./challenge7-model-loader
+    ports: ["5007:5007"]
+    restart: unless-stopped
+
+  watermark-cipher:
+    build: ./challenge8-watermark-cipher
+    ports: ["5008:5008"]
+    restart: unless-stopped
